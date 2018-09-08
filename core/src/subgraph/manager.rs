@@ -91,7 +91,7 @@ impl RuntimeManager where {
                     let mut new_hosts = manifest
                         .data_sources
                         .iter()
-                        .map(|d| host_builder.build(manifest.clone(), d.clone()))
+                        .map(|d| host_builder.build(manifest.clone(), d.clone()), store.clone())
                         .collect::<Vec<_>>();
 
                     // Forward events from the runtime host to the store; this
