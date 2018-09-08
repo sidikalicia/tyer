@@ -216,6 +216,9 @@ impl RuntimeManager where {
                 .for_each(move |update| {
                     info!(logger, "Runtime manager received head block update");
 
+                    let err_logger = logger.clone();
+                    let err_subgraph_id = subgraph_id.clone();
+
                     match runtime_hosts_by_subgraph
                         .lock()
                         .unwrap()
@@ -227,12 +230,16 @@ impl RuntimeManager where {
                             eth_adapter.clone(),
                             subgraph_id.clone(),
                             &mut runtime_hosts,
-                        )
-                        // TODO: Should log the error here
-                            .map_err(|_| ()),
+                        ).err()
+                            .map(move |e| {
+                                warn!(err_logger, "Problem while handling head block update: {}",
+                                      e; "subgraph_id" => err_subgraph_id);
+                            }),
                         // TODO: Here we should error
-                        None => Ok(()),
-                    }
+                        None => return Err(()),
+                    };
+
+                    Ok(())
                 }),
         );
 
@@ -564,7 +571,6 @@ where
                         .lock()
                         .unwrap()
                         .get_events_in_block(descendant_block, event_filter.clone())
-                        .collect()
                         .wait()?;
 
                     debug!(
