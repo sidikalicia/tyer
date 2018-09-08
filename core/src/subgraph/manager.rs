@@ -91,7 +91,7 @@ impl RuntimeManager where {
                     let mut new_hosts = manifest
                         .data_sources
                         .iter()
-                        .map(|d| host_builder.build(manifest.clone(), d.clone()), store.clone())
+                        .map(|d| host_builder.build(manifest.clone(), d.clone()))
                         .collect::<Vec<_>>();
 
                     // Forward events from the runtime host to the store; this
@@ -213,7 +213,7 @@ impl RuntimeManager where {
         tokio::spawn(
             head_block_updates
                 .select(canceled.into_stream().map_err(|_| ()))
-                .for_each(move |update| {
+                .for_each(move |_update| {
                     info!(logger, "Runtime manager received head block update");
 
                     let err_logger = logger.clone();

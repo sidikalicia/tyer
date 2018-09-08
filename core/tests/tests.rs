@@ -148,10 +148,15 @@ fn multiple_data_sources_per_subgraph() {
                     let eth_adapter = Arc::new(Mutex::new(MockEthereumAdapter {
                         event_sigs: RefCell::new(HashSet::new()),
                     }));
-                    let host_builder =
-                        RuntimeHostBuilder::new(&logger, eth_adapter.clone(), resolver.clone());
-
                     let fake_store = Arc::new(Mutex::new(FakeStore::new()));
+
+                    let host_builder = RuntimeHostBuilder::new(
+                        &logger,
+                        eth_adapter.clone(),
+                        resolver.clone(),
+                        fake_store.clone(),
+                    );
+
                     let manager =
                         RuntimeManager::new(&logger, fake_store, eth_adapter.clone(), host_builder);
 

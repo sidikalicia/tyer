@@ -323,7 +323,6 @@ where
         };
 
         // Send an entity set event
-        let logger = self.logger.clone();
         let get_result = self.store
             .lock()
             .unwrap()
@@ -678,6 +677,10 @@ impl ModuleImportResolver for StoreModuleResolver {
                 Signature::new(&[ValueType::I32, ValueType::I32][..], None),
                 STORE_REMOVE_FUNC_INDEX,
             ),
+            "get" => FuncInstance::alloc_host(
+                Signature::new(&[ValueType::I32, ValueType::I32][..], Some(ValueType::I32)),
+                STORE_GET_FUNC_INDEX,
+            ),
             _ => {
                 return Err(Error::Instantiation(format!(
                     "Export '{}' not found",
@@ -823,6 +826,7 @@ mod tests {
     extern crate failure;
     extern crate graphql_parser;
     extern crate parity_wasm;
+    extern crate graph_mock;
 
     use self::graphql_parser::schema::Document;
     use ethabi::{LogParam, Token};
@@ -838,6 +842,7 @@ mod tests {
     use graph::components::subgraph::*;
     use graph::data::subgraph::*;
     use graph::util;
+    use self::graph_mock::FakeStore;
 
     use super::*;
 
@@ -954,6 +959,7 @@ mod tests {
                 event_sink: sender,
                 ethereum_adapter: mock_ethereum_adapter,
                 link_resolver: Arc::new(FakeLinkResolver),
+                store: Arc::new(Mutex::new(FakeStore))
             },
         );
 
@@ -1000,6 +1006,7 @@ mod tests {
                         event_sink: sender,
                         ethereum_adapter: mock_ethereum_adapter,
                         link_resolver: Arc::new(FakeLinkResolver),
+                        store: Arc::new(Mutex::new(FakeStore))
                     },
                 );
 
@@ -1064,6 +1071,7 @@ mod tests {
                         event_sink: sender,
                         ethereum_adapter: mock_ethereum_adapter,
                         link_resolver: Arc::new(FakeLinkResolver),
+                        store: Arc::new(Mutex::new(FakeStore))
                     },
                 );
 
