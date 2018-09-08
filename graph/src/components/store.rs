@@ -129,7 +129,7 @@ impl fmt::Display for EventSource {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SubgraphId(pub String);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct EthereumBlockPointer {
     pub hash: H256,
     pub number: u64,
