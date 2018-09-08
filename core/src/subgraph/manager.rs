@@ -157,7 +157,7 @@ impl RuntimeManager where {
                     .unwrap();
                 tx.set(store_key, entity)
                     .expect("Failed to set entity in the store");
-                tx.commit().unwrap();
+                tx.commit_no_ptr_update().unwrap();
             }
             RuntimeHostEvent::EntityRemoved(store_key, block) => {
                 let store = store.lock().unwrap();
@@ -167,7 +167,7 @@ impl RuntimeManager where {
                     .unwrap();
                 tx.delete(store_key)
                     .expect("Failed to delete entity from the store");
-                tx.commit().unwrap();
+                tx.commit_no_ptr_update().unwrap();
             }
         }
     }
@@ -214,6 +214,8 @@ impl RuntimeManager where {
             head_block_updates
                 .select(canceled.into_stream().map_err(|_| ()))
                 .for_each(move |update| {
+                    info!(logger, "Runtime manager received head block update");
+
                     match runtime_hosts_by_subgraph
                         .lock()
                         .unwrap()
