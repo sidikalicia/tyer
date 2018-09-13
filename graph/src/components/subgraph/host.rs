@@ -27,7 +27,7 @@ pub trait RuntimeHost:
     fn subgraph_manifest(&self) -> &SubgraphManifest;
 
     /// An event filter matching all Ethereum events that this runtime host is interested in.
-    fn event_filter(&self) -> EthereumEventFilter;
+    fn event_filter(&self) -> Result<EthereumEventFilter, Error>;
 }
 
 pub trait RuntimeHostBuilder: Send + 'static {

@@ -17,6 +17,7 @@ use web3::types::Log;
 use web3::types::Transaction;
 
 use components::store::EthereumBlockPointer;
+use prelude::Strings;
 
 /// A request for the state of a contract at a specific block hash and address.
 pub struct EthereumContractStateRequest {
@@ -231,6 +232,16 @@ impl Sum for EthereumEventFilter {
     fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
         iter.fold(Self::empty(), |acc, f| acc + f)
     }
+}
+
+#[derive(Clone, Debug, Serialize, Fail)]
+pub enum EthereumEventFilterError {
+    #[fail(display = "ABI not found in data source '{}': {}", _0, _1)]
+    AbiNotFound(String, String),
+    #[fail(display = "Events not found in contract ABI '{}': {}", _0, _1)]
+    EventsNotFound(String, Strings),
+    #[fail(display = "Invalid address for contract ABI '{}': {}", _0, _1)]
+    InvalidContractAddress(String, String),
 }
 
 /// Common trait for components that watch and manage access to Ethereum.

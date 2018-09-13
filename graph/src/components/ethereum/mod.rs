@@ -3,7 +3,8 @@ mod adapter;
 pub use self::adapter::{
     BlockNumberRange, EthereumAdapter, EthereumContractCall, EthereumContractCallError,
     EthereumContractState, EthereumContractStateError, EthereumContractStateRequest, EthereumEvent,
-    EthereumEventFilter, EthereumEventSubscription, EthereumSubscriptionError,
+    EthereumEventFilter, EthereumEventFilterError, EthereumEventSubscription,
+    EthereumSubscriptionError,
 };
 
 pub use web3::types::BlockNumber;
