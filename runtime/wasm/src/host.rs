@@ -36,7 +36,12 @@ where
     L: LinkResolver,
     S: Store,
 {
-    pub fn new(logger: &Logger, ethereum_adapter: Arc<Mutex<T>>, link_resolver: Arc<L>, store: Arc<Mutex<S>>) -> Self {
+    pub fn new(
+        logger: &Logger,
+        ethereum_adapter: Arc<Mutex<T>>,
+        link_resolver: Arc<L>,
+        store: Arc<Mutex<S>>,
+    ) -> Self {
         RuntimeHostBuilder {
             logger: logger.new(o!("component" => "RuntimeHostBuilder")),
             ethereum_adapter,
@@ -57,7 +62,7 @@ where
     fn build(
         &mut self,
         subgraph_manifest: SubgraphManifest,
-        data_source: DataSource
+        data_source: DataSource,
     ) -> Self::Host {
         RuntimeHost::new(
             &self.logger,
@@ -200,7 +205,7 @@ impl RuntimeHost {
 
                     module.handle_ethereum_event(event_handler.handler.as_str(), event);
                 }
-             }
+            }
 
             debug!(event_logger, "Done processing event in this RuntimeHost.");
             on_complete.send(Ok(())).unwrap();

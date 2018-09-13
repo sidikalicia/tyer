@@ -225,8 +225,12 @@ fn async_main() -> impl Future<Item = (), Error = ()> + Send + 'static {
     }
 
     let ethereum_watcher_protected = Arc::new(Mutex::new(ethereum_watcher));
-    let runtime_host_builder =
-        WASMRuntimeHostBuilder::new(&logger, ethereum_watcher_protected.clone(), resolver, protected_store.clone());
+    let runtime_host_builder = WASMRuntimeHostBuilder::new(
+        &logger,
+        ethereum_watcher_protected.clone(),
+        resolver,
+        protected_store.clone(),
+    );
     let runtime_manager = graph_core::RuntimeManager::new(
         &logger,
         protected_store.clone(),
