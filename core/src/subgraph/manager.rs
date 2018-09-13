@@ -248,10 +248,18 @@ impl RuntimeManager where {
                 }
 
                 // Create a combined event filter for the data source events in the subgraph
-                let event_filter = runtime_hosts
-                    .iter()
-                    .map(|host| host.event_filter())
-                    .sum::<EthereumEventFilter>();
+                let mut event_filter = EthereumEventFilter::empty();
+                let mut event_filter_failed = false;
+                for runtime_host in runtime_hosts.iter() {
+                    match runtime_host.event_filter() {
+                        Ok(filter) => event_filter += filter,
+                        Err(e) => {
+                            error!(logger, "Failed to obtain event filter";
+                                   "error" => format!("{}", e));
+                            event_filter_failed = true;
+                        }
+                    }
+                }
 
                 // Collect Ethereum event sinks from all runtime hosts, so we can send them
                 // relevant Ethereum events for processing
