@@ -7,8 +7,8 @@ use std::sync::Mutex;
 use std::thread;
 
 use graph::components::ethereum::*;
-use graph::components::subgraph::RuntimeHostEvent;
 use graph::components::store::Store;
+use graph::components::subgraph::RuntimeHostEvent;
 use graph::data::subgraph::DataSource;
 use graph::prelude::{
     RuntimeHost as RuntimeHostTrait, RuntimeHostBuilder as RuntimeHostBuilderTrait, *,
@@ -234,45 +234,52 @@ impl RuntimeHostTrait for RuntimeHost {
     }
 
     // TODO cache this?
-    fn event_filter(&self) -> EthereumEventFilter {
+    fn event_filter(&self) -> Result<EthereumEventFilter, Error> {
         let data_source = &self.config.data_source;
 
-        // Obtain the contract address of the data set.
-        let address = Address::from_str(data_source.source.address.as_str())
-            .expect("Failed to parse contract address");
+        // Obtain the contract address of the data set
+        let address = Address::from_str(data_source.source.address.as_str()).map_err(|_| {
+            EthereumEventFilterError::InvalidContractAddress(
+                data_source.name.clone(),
+                data_source.source.address.clone(),
+            )
+        })?;
 
-        // Load the main dataset contract.
+        // Load the main dataset contract
         let contract = data_source
             .mapping
             .abis
             .iter()
             .find(|abi| abi.name == data_source.source.abi)
-            .expect("No ABI entry found for the main contract of the dataset")
+            .ok_or(EthereumEventFilterError::AbiNotFound(
+                data_source.name.clone(),
+                data_source.source.abi.clone(),
+            ))?
             .contract
             .clone();
 
         // Combine event handlers into one large event filter
-        data_source
-            .mapping
-            .event_handlers
-            .iter()
-            .map(|event_handler| {
-                debug!(self.logger, "Prepare subscription";
-                        "event" => &event_handler.event,
-                        "handler" => &event_handler.handler,
-                    );
-                let event = util::ethereum::contract_event_with_signature(
-                    &contract,
-                    event_handler.event.as_str(),
-                ).expect(
-                    format!("Event not found in contract: {}", event_handler.event)
-                        .as_str(),
-                );
+        let mut missing_events = vec![];
+        let mut event_filter = EthereumEventFilter::empty();
+        for event_handler in data_source.mapping.event_handlers.iter() {
+            match util::ethereum::contract_event_with_signature(
+                &contract,
+                event_handler.event.as_str(),
+            ) {
+                Some(event) => {
+                    event_filter += EthereumEventFilter::from_single(address, event.to_owned())
+                }
+                None => missing_events.push(event_handler.event.clone()),
+            };
+        }
 
-                EthereumEventFilter::from_single(address, event.to_owned())
-            })
-
-            // Take the union of the event filters
-            .sum()
+        if missing_events.is_empty() {
+            Ok(event_filter)
+        } else {
+            Err(EthereumEventFilterError::EventsNotFound(
+                data_source.name.clone(),
+                Strings(missing_events),
+            ))?
+        }
     }
 }
