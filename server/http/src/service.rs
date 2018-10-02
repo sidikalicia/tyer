@@ -144,10 +144,10 @@ where
             (Method::GET, "/") => self.index(),
 
             (Method::GET, "/graphiql.css") => {
-                self.serve_file(include_str!("../assets/graphiql.css"))
+                self.serve_file(include_str!("../assets/graphiql/graphiql.css"))
             }
             (Method::GET, "/graphiql.min.js") => {
-                self.serve_file(include_str!("../assets/graphiql.min.js"))
+                self.serve_file(include_str!("../assets/graphiql/graphiql.min.js"))
             }
 
             // Request is relative to a subgraph.
@@ -160,7 +160,7 @@ where
                 match (method, name_or_id, rest.as_str()) {
                     // GraphiQL
                     (Method::GET, Some(_), "") => {
-                        self.serve_file(include_str!("../assets/index.html"))
+                        self.serve_file(include_str!("../assets/graphiql/index.html"))
                     }
 
                     // POST / receives GraphQL queries

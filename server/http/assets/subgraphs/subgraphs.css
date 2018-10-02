@@ -1,0 +1,262 @@
+.root {
+  background-color: #1b1e2a;
+  position: relative;
+  overflow: hidden;
+  padding: 160px 0px 650px 0;
+  text-align: center;
+}
+
+.root::before {
+  width: 100%;
+  height: 100%;
+  position: absolute;
+  top: 0;
+  left: 0;
+  content: '';
+  opacity: 0.6;
+  background: url('./images/aztec-pattern.png') no-repeat;
+  z-index: 4;
+}
+
+.root::after {
+  width: 100%;
+  height: 100%;
+  position: absolute;
+  top: 0;
+  left: 0;
+  content: '';
+  background: url('./images/space.png') no-repeat;
+  z-index: 3;
+  background-size: contain;
+}
+
+.root .shape1 {
+  background: url('./images/shape1.svg') no-repeat;
+  background-position: left bottom;
+  position: absolute;
+  height: 1260px;
+  width: 100%;
+  left: 0;
+  bottom: 0;
+  z-index: 4;
+}
+
+.root .shape2 {
+  background: url('./images/shape2.svg') no-repeat;
+  position: absolute;
+  height: 380px;
+  width: 100%;
+  left: 0;
+  bottom: 0;
+  z-index: 4;
+}
+
+.root .shape3 {
+  background: url('./images/shape3.svg') no-repeat;
+  background-position: right bottom;
+  position: absolute;
+  height: 1800px;
+  width: 1000px;
+  right: 0;
+  bottom: 0;
+  z-index: 4;
+}
+
+.root .shape4 {
+  background: url('./images/shape4.svg') no-repeat;
+  background-size: cover;
+  position: absolute;
+  height: 500px;
+  width: 100%;
+  left: 0;
+  bottom: -30px;
+  z-index: 4;
+}
+
+.root .theg {
+  background: url('./images/g.svg') no-repeat;
+  position: absolute;
+  width: 45px;
+  height: 65px;
+  bottom: 20%;
+  z-index: 7;
+  left: 0;
+  right: 0;
+  margin: 0 auto;
+}
+
+.top {
+  max-width: 580px;
+  width: 100%;
+  margin: 0 auto;
+  position: relative;
+  z-index: 7;
+}
+
+.title {
+  font-size: 2.5rem;
+  font-family: Dosis;
+  font-weight: 300;
+  color: rgba(255, 255, 255, 0.9);
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  margin-bottom: 10px;
+}
+
+.subtitle {
+  font-family: 'Fira Sans';
+  font-size: 1.25rem;
+  font-weight: 300;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.subgraphs {
+  position: relative;
+  z-index: 6;
+  margin: 0 auto;
+  margin-top: 100px;
+  max-width: 1200px;
+  display: flex;
+  flex-wrap: wrap;
+  box-sizing: border-box;
+}
+
+.subgraph {
+  position: relative;
+  width: 360px;
+  height: 370px;
+  border-radius: 4px;
+  box-shadow: none;
+}
+
+.subgraph .header {
+  position: relative;
+  height: 160px;
+  padding: 20px;
+  text-align: left;
+  background-image: linear-gradient(rgba(0, 0, 0, 0.5), rgba(0, 0, 0, 0.5)),
+    url('./images/header.jpg');
+  background-repeat: no-repeat;
+  width: 100%;
+  background-size: cover;
+  box-sizing: border-box;
+  background-position: center;
+}
+
+.subgraph .header::before {
+  content: '';
+  position: absolute;
+}
+
+.subgraph .header .name {
+  font-family: Dosis;
+  font-size: 2rem;
+  font-weight: 300;
+  color: #ffffff;
+  line-height: 1.20588em;
+  text-transform: uppercase;
+  margin-top: 70px;
+  margin-left: 5px;
+  letter-spacing: 1.96px;
+}
+
+.subgraph .divider {
+  width: 300px;
+  height: 1px;
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 20px;
+  margin: 0 auto;
+  z-index: 1;
+  background: #c8c9cc;
+}
+
+.subgraph .divider::before,
+.subgraph .divider::after {
+  content: '';
+  width: 6px;
+  height: 6px;
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  margin: auto 0;
+  border: #fff 1px solid;
+  border-radius: 1px;
+  transform: rotate(45deg);
+}
+
+.subgraph .divider::before {
+  left: -9px;
+}
+
+.subgraph .divider::after {
+  right: -9px;
+}
+
+.subgraph .content {
+  height: 210px;
+  background-color: #fff;
+}
+
+.subgraph .content .text-group {
+  text-align: left;
+  padding: 15px 25px;
+  display: flex;
+  justify-content: space-between;
+}
+
+.subgraph .content .type {
+  font-family: Dosis;
+  font-size: 1rem;
+  text-transform: uppercase;
+  font-weight: 400;
+  letter-spacing: 1.6px;
+  opacity: 0.8;
+}
+
+.subgraph .content .link {
+  font-family: 'Fira Sans';
+  font-size: 0.75rem;
+  font-weight: 400;
+  line-height: 18px;
+}
+
+.subgraph .content .text-group .icon {
+  height: 17px;
+  width: 17px;
+  position: relative;
+  top: 8px;
+}
+
+@media (min-width: 1180px) {
+  .subgraph {
+    padding: 20px;
+  }
+  .subgraph:nth-of-type(3n + 1) {
+    padding-left: 0;
+  }
+}
+
+@media (max-width: 1180px) and (min-width: 760px) {
+  .subgraphs {
+    max-width: 804px;
+  }
+
+  .subgraph {
+    padding: 20px;
+  }
+  .subgraph:nth-of-type(2n + 1) {
+    padding-left: 0;
+  }
+}
+
+@media (max-width: 760px) {
+  .subgraphs {
+    max-width: 400px;
+  }
+
+  .subgraph {
+    padding: 20px;
+  }
+}

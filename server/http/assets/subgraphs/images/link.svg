@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="18px" height="19px" viewBox="0 0 18 19" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+    <!-- Generator: Sketch 51.2 (57519) - http://www.bohemiancoding.com/sketch -->
+    <title>icon / copy</title>
+    <desc>Created with Sketch.</desc>
+    <defs></defs>
+    <g id="Symbols" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd" opacity="0.32" stroke-linecap="round" stroke-linejoin="round">
+        <g id="Card-/-Subgraph" transform="translate(-337.000000, -191.000000)" stroke="#1B1E2A">
+            <g id="icon-/-copy" transform="translate(338.000000, 192.000000)">
+                <g id="Group">
+                    <path d="M3.74945,11.49995 C3.74945,8.73845 5.98845,6.49945 8.74995,6.49945 L12.83345,6.49945" id="Stroke-1"></path>
+                    <polyline id="Stroke-3" points="9.66595 3.3332 12.83345 6.5002 9.66595 9.6677"></polyline>
+                    <polyline id="Stroke-5" points="6.24995 9.66795 6.24995 12.75095 16.25045 12.75095 16.25045 0.24995 6.24995 0.24995 6.24995 7.16845"></polyline>
+                    <polyline id="Stroke-7" points="3.74895 4.24995 0.24995 4.24995 0.24995 16.74995 10.24945 16.74995 10.24945 15.24995"></polyline>
+                </g>
+            </g>
+        </g>
+    </g>
+</svg>
