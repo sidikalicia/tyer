@@ -8,7 +8,10 @@ futures = "0.1.21"
 hex = "0.3.2"
 graph = { path = "../../graph" }
 tiny-keccak = "1.4.2"
-wasmi = "0.4"
+
+# Use our patch to be able to reset globals, hopefully we'll be able to upstream
+# this functionality. See https://github.com/paritytech/wasmi/pull/158.
+wasmi = { path = "../../../forks/wasmi" } #{ git = "https://github.com/leodasvacas/wasmi", branch = "get-globals" }
 pwasm-utils = "0.6.1"
 
 [dev-dependencies]

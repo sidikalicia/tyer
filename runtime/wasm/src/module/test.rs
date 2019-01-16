@@ -532,3 +532,39 @@ fn abort() {
         .unwrap_err();
     assert_eq!(err.to_string(), "Trap: Trap { kind: Host(HostExportError(\"Mapping aborted at abort.ts, line 6, column 2, with message: not true\")) }");
 }
+
+#[test]
+fn reset_globals() {
+    let mut module = test_module(mock_data_source("wasm_test/reset.wasm"));
+
+    // Count starts at 1.
+    let count = module
+        .module
+        .clone()
+        .invoke_export("incr_and_return", &[], &mut module)
+        .unwrap()
+        .unwrap();
+    let count: u32 = count.try_into().unwrap();
+    assert_eq!(count, 1);
+
+    // Then 2.
+    let count = module
+        .module
+        .clone()
+        .invoke_export("incr_and_return", &[], &mut module)
+        .unwrap()
+        .unwrap();
+    let count: u32 = count.try_into().unwrap();
+    assert_eq!(count, 2);
+
+    // With reset it's back to 1.
+    module.reset().unwrap();
+    let count = module
+        .module
+        .clone()
+        .invoke_export("incr_and_return", &[], &mut module)
+        .unwrap()
+        .unwrap();
+    let count: u32 = count.try_into().unwrap();
+    assert_eq!(count, 1);
+}

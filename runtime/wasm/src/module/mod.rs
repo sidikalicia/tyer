@@ -3,9 +3,9 @@ use std::ops::Deref;
 use std::time::Instant;
 
 use wasmi::{
-    nan_preserving_float::F64, Error, Externals, FuncInstance, FuncRef, HostError, ImportsBuilder,
-    MemoryRef, Module, ModuleImportResolver, ModuleInstance, ModuleRef, RuntimeArgs, RuntimeValue,
-    Signature, Trap,
+    nan_preserving_float::F64, Error, Externals, FuncInstance, FuncRef, GlobalRef, HostError,
+    ImportsBuilder, MemoryRef, Module, ModuleImportResolver, ModuleInstance, ModuleRef,
+    RuntimeArgs, RuntimeValue, Signature, Trap,
 };
 
 use graph::components::ethereum::*;
@@ -49,6 +49,8 @@ const BIG_INT_TIMES: usize = 21;
 const BIG_INT_DIVIDED_BY: usize = 22;
 const BIG_INT_MOD: usize = 23;
 const GAS_FUNC_INDEX: usize = 24;
+const MALLOC_FUNC_INDEX: usize = 25;
+const FREE_FUNC_INDEX:  usize = 26;
 
 pub struct WasmiModuleConfig<T, L, S> {
     pub subgraph_id: SubgraphDeploymentId,
@@ -65,6 +67,12 @@ pub struct WasmiModule<T, L, S, U> {
     memory: MemoryRef,
     host_exports: host_exports::HostExports<T, L, S, U>,
     start_time: Instant,
+
+    // Index and values of mutable globals after running `start`.
+    globals_start_value: Vec<(u32, RuntimeValue)>,
+    used_size_at_start: usize,
+    memory_offset: usize,
+    debug: Vec<(u32, GlobalRef)>,
 }
 
 impl<T, L, S, U> WasmiModule<T, L, S, U>
@@ -99,14 +107,28 @@ where
             .entries()
             .into_iter()
             .map(|import| import.module().to_owned())
-            .filter(|module| module != "env")
+            .filter(|module| module != "env" && module != "system")
             .collect();
+        user_modules.sort();
         user_modules.dedup();
+        println!("{:?}", user_modules);
         let user_module = match user_modules.len() {
             0 => None,
             1 => Some(user_modules.into_iter().next().unwrap()),
             _ => return Err(err_msg("WASM module has multiple import sections")),
         };
+
+        {
+            let entries = parsed_module.global_section().unwrap().entries();
+            println!("at {:?}", config.data_source.name);
+            /*println!(
+                "globals: {:?}",
+                entries
+                    .iter()
+                    .filter(|e| e.global_type().is_mutable())
+                    .collect::<Vec<_>>()
+            );*/
+        }
 
         let module = Module::from_parity_wasm_module(parsed_module).map_err(|e| {
             format_err!(
@@ -119,6 +141,7 @@ where
         // Build import resolver
         let mut imports = ImportsBuilder::new();
         imports.push_resolver("env", &EnvModuleResolver);
+        imports.push_resolver("system", &SystemModuleResolver);
         if let Some(user_module) = user_module {
             imports.push_resolver(user_module, &ModuleResolver);
         }
@@ -153,11 +176,33 @@ where
             memory,
             host_exports,
             start_time: Instant::now(),
+            globals_start_value: Vec::new(),
+            debug: Vec::new(),
+            used_size_at_start: 0,
+            memory_offset: 0,
         };
 
         this.module = module
             .run_start(&mut this)
             .map_err(|e| format_err!("Failed to start WASM module instance: {}", e))?;
+        
+        println!("used after start {}", this.memory.used_size().0);
+        println!("size at start {}", this.memory.current_size().0);
+        this.used_size_at_start = this.memory.used_size().0;
+
+        // Collect the index and values of mutable globals.
+        this.globals_start_value = this
+            .module
+            .globals()
+            .filter(|(_, global)| global.is_mutable())
+            .map(|(idx, global)| (idx, global.get()))
+            .collect();
+
+        this.debug = this
+            .module
+            .globals()
+            .filter(|(_, global)| global.is_mutable())
+            .collect();
 
         Ok(this)
     }
@@ -186,12 +231,10 @@ where
         };
 
         // Invoke the event handler
-        let result = self.module.clone().invoke_export(
-            handler_name,
-            &[RuntimeValue::from(self.asc_new(&event))],
-            self,
-        );
+        let result = self.reset_and_invoke_handler(handler_name, event);
 
+
+        println!("size at fail {}", self.memory.current_size().0);
         // Return either the collected entity operations or an error
         result
             .map(|_| {
@@ -209,6 +252,46 @@ where
                 )
             })
     }
+
+    // Reset and call handler.
+    fn reset_and_invoke_handler(
+        &mut self,
+        handler_name: &str,
+        event: EthereumEventData,
+    ) -> Result<Option<RuntimeValue>, Error> {
+        //self.reset()?;
+        let event_ptr = RuntimeValue::from(self.asc_new(&event));
+        self.module
+            .clone()
+            .invoke_export(handler_name, &[event_ptr], self)
+    }
+
+    // Zero out memory and set globals to the values they had after running
+    // `start`.
+    fn reset(&mut self) -> Result<(), Error> {
+        for (idx, value) in &self.debug {
+            println!("at idx {} value is {:?}", idx, value.get());
+        }
+        for (idx, value) in &self.globals_start_value {
+            println!("at idx {} value be {:?}", idx, value);
+
+             self.module.global_by_index(*idx).unwrap().set(*value)?;
+            
+        }
+
+        /*            self
+            .module
+            .clone()
+            .invoke_export(
+                "memory.reset",
+                &[],
+            self,
+            )
+            .expect("Failed to invoke memory reset function");*/
+        //self.memory.with_direct_access_mut(|buf| buf.resize(self.used_size_at_start, 0));
+        //self.memory.zero(self.used_size_at_start, self.memory.used_size().0 - self.used_size_at_start)?;
+        Ok(())
+    }
 }
 
 impl<T, L, S, U> AscHeap for WasmiModule<T, L, S, U>
@@ -225,7 +308,7 @@ where
             .invoke_export(
                 "memory.allocate",
                 &[RuntimeValue::I32(bytes.len() as i32)],
-                self,
+            self,
             )
             .expect("Failed to invoke memory allocation function")
             .expect("Function did not return a value")
@@ -526,6 +609,22 @@ where
         let result_ptr: AscPtr<AscBigInt> = self.asc_new(&result);
         Ok(Some(RuntimeValue::from(result_ptr)))
     }
+
+    fn malloc(
+        &mut self,
+        size: u32,
+    ) -> Result<Option<RuntimeValue>, Trap> {
+        let ptr = self.memory_offset as u32;
+        self.memory_offset += size as usize;
+        Ok(Some(ptr.into()))
+    }
+
+    fn free(
+        &mut self,
+        ptr: u32,
+    ) -> Result<Option<RuntimeValue>, Trap> {
+        Ok(None)
+    }
 }
 
 impl<T, L, S, U> Externals for WasmiModule<T, L, S, U>
@@ -583,6 +682,8 @@ where
             }
             BIG_INT_MOD => self.big_int_mod(args.nth_checked(0)?, args.nth_checked(1)?),
             GAS_FUNC_INDEX => self.gas(args.nth_checked(0)?),
+            MALLOC_FUNC_INDEX => self.malloc(args.nth_checked(0)?),
+            FREE_FUNC_INDEX => self.free(args.nth_checked(0)?),
             _ => panic!("Unimplemented function at {}", index),
         }
     }
@@ -596,6 +697,24 @@ impl ModuleImportResolver for EnvModuleResolver {
         Ok(match field_name {
             "gas" => FuncInstance::alloc_host(signature.clone(), GAS_FUNC_INDEX),
             "abort" => FuncInstance::alloc_host(signature.clone(), ABORT_FUNC_INDEX),
+            _ => {
+                return Err(Error::Instantiation(format!(
+                    "Export '{}' not found",
+                    field_name
+                )));
+            }
+        })
+    }
+}
+
+/// System allocator module resolver
+pub struct SystemModuleResolver;
+
+impl ModuleImportResolver for SystemModuleResolver {
+    fn resolve_func(&self, field_name: &str, signature: &Signature) -> Result<FuncRef, Error> {
+        Ok(match field_name {
+            "malloc" => FuncInstance::alloc_host(signature.clone(), MALLOC_FUNC_INDEX),
+            "free" => FuncInstance::alloc_host(signature.clone(), FREE_FUNC_INDEX),
             _ => {
                 return Err(Error::Instantiation(format!(
                     "Export '{}' not found",
