@@ -36,11 +36,34 @@ impl EthereumAdapter for MockEthereumAdapter {
         unimplemented!();
     }
 
+    fn latest_block(
+        &self,
+        _: &Logger,
+    ) -> Box<Future<Item = Block<Transaction>, Error = Error> + Send> {
+        unimplemented!();
+    }
+
+    fn load_full_block(
+        &self,
+        _: &Logger,
+        _: Block<Transaction>,
+    ) -> Box<Future<Item = EthereumBlock, Error = EthereumAdapterError> + Send> {
+        unimplemented!();
+    }
+
+    fn blocks(
+        &self,
+        _: &Logger,
+        _: Vec<BlockId>,
+    ) -> Box<Stream<Item = EthereumBlock, Error = EthereumAdapterError> + Send> {
+        unimplemented!();
+    }
+
     fn block_by_hash(
         &self,
         _: &Logger,
         _: H256,
-    ) -> Box<Future<Item = Option<EthereumBlock>, Error = Error> + Send> {
+    ) -> Box<Future<Item = Option<EthereumBlock>, Error = EthereumAdapterError> + Send> {
         unimplemented!();
     }
 

@@ -1,46 +1,37 @@
 use failure::Error;
-use std::fmt::Debug;
 use std::time::Duration;
 use std::time::Instant;
 
 use graph::prelude::*;
-use graph::web3::api::Web3;
-use graph::web3::transports::batch::Batch;
 use graph::web3::types::*;
-use graph::web3::BatchTransport;
-use graph::web3::Transport;
 
-pub struct BlockIngestor<S, T>
+pub struct BlockIngestor<S, E>
 where
     S: ChainStore,
-    T: BatchTransport + Send + Sync + Debug + Clone + 'static,
-    <T as Transport>::Out: Send,
-    <T as BatchTransport>::Batch: Send,
+    E: EthereumAdapter,
 {
     chain_store: Arc<S>,
-    web3_transport: T,
+    eth_adapter: Arc<E>,
     ancestor_count: u64,
     logger: slog::Logger,
     polling_interval: Duration,
 }
 
-impl<S, T> BlockIngestor<S, T>
+impl<S, E> BlockIngestor<S, E>
 where
     S: ChainStore,
-    T: BatchTransport + Send + Sync + Debug + Clone + 'static,
-    <T as Transport>::Out: Send,
-    <T as BatchTransport>::Batch: Send,
+    E: EthereumAdapter,
 {
     pub fn new(
         chain_store: Arc<S>,
-        web3_transport: T,
+        eth_adapter: Arc<E>,
         ancestor_count: u64,
         logger: slog::Logger,
         polling_interval: Duration,
-    ) -> Result<BlockIngestor<S, T>, Error> {
+    ) -> Result<BlockIngestor<S, E>, Error> {
         Ok(BlockIngestor {
             chain_store,
-            web3_transport,
+            eth_adapter,
             ancestor_count,
             logger: logger.new(o!("component" => "BlockIngestor")),
             polling_interval,
@@ -61,14 +52,14 @@ where
                     if let Err(err) = result {
                         // Some polls will fail due to transient issues
                         match err {
-                            BlockIngestorError::BlockUnavailable(_) => {
+                            EthereumAdapterError::BlockUnavailable(_) => {
                                 trace!(
                                     static_self.logger,
                                     "Trying again after block polling failed: {}",
                                     err
                                 );
                             }
-                            BlockIngestorError::Unknown(inner_err) => {
+                            EthereumAdapterError::Unknown(inner_err) => {
                                 warn!(
                                     static_self.logger,
                                     "Trying again after block polling failed: {}", inner_err
@@ -83,7 +74,7 @@ where
             })
     }
 
-    fn do_poll<'a>(&'a self) -> impl Future<Item = (), Error = BlockIngestorError> + 'a {
+    fn do_poll<'a>(&'a self) -> impl Future<Item = (), Error = EthereumAdapterError> + 'a {
         trace!(self.logger, "BlockIngestor::do_poll");
 
         // Get chain head ptr from store
@@ -91,7 +82,8 @@ where
             .from_err()
             .and_then(move |head_block_ptr_opt| {
                 // Ask for latest block from Ethereum node
-                self.get_latest_block()
+                self.eth_adapter.latest_block(&self.logger)
+                    .from_err()
                     // Compare latest block with head ptr, alert user if far behind
                     .and_then(move |latest_block: Block<Transaction>| -> Box<Future<Item=_, Error=_> + Send> {
                         match head_block_ptr_opt {
@@ -117,8 +109,11 @@ where
                         }
 
                         Box::new(
-                            self.load_full_block(latest_block)
-                            .and_then(move |latest_block: EthereumBlock| {
+                            self.preload_blocks((&latest_block).into())
+                            .and_then(move |()| {
+                                self.eth_adapter.load_full_block(&self.logger, latest_block)
+                                    .from_err()
+                            }).and_then(move |latest_block: EthereumBlock| {
                                 // Store latest block in block store.
                                 // Might be a no-op if latest block is one that we have seen.
                                 // ingest_blocks will return a (potentially incomplete) list of blocks that are
@@ -152,7 +147,8 @@ where
                                             Box::new(future::ok(future::Loop::Break(())))
                                         } else {
                                             // Some blocks are missing: load them, ingest them, and repeat.
-                                            let missing_blocks = self.get_blocks(&missing_block_hashes);
+                                            let missing_block_ids = missing_block_hashes.into_iter().map(BlockId::Hash).collect();
+                                            let missing_blocks = self.eth_adapter.blocks(&self.logger, missing_block_ids);
                                             Box::new(self.ingest_blocks(missing_blocks).map(future::Loop::Continue))
                                         }
                                     },
@@ -163,100 +159,68 @@ where
             })
     }
 
-    fn get_latest_block<'a>(
+    fn preload_blocks<'a>(
         &'a self,
-    ) -> impl Future<Item = Block<Transaction>, Error = BlockIngestorError> + 'a {
-        let web3 = Web3::new(self.web3_transport.clone());
-        web3.eth()
-            .block_with_txs(BlockNumber::Latest.into())
-            .map_err(|e| format_err!("could not get latest block from Ethereum: {}", e))
+        latest_block_ptr: EthereumBlockPointer,
+    ) -> impl Future<Item = (), Error = EthereumAdapterError> + 'a {
+        future::result(self.chain_store.chain_head_ptr())
             .from_err()
-            .and_then(|block_opt| {
-                block_opt
-                    .ok_or_else(|| format_err!("no latest block returned from Ethereum").into())
-            })
-    }
-
-    fn load_full_block<'a>(
-        &'a self,
-        block: Block<Transaction>,
-    ) -> impl Future<Item = EthereumBlock, Error = BlockIngestorError> + 'a {
-        let block_hash = block.hash.unwrap();
-
-        // Load transaction receipts
-        let receipt_futures = block
-            .transactions
-            .iter()
-            .map(move |tx| self.get_transaction_receipt(block_hash, tx.hash))
-            .collect::<Vec<_>>();
-
-        // Merge receipts with Block<Transaction> to get EthereumBlock
-        stream::futures_ordered(receipt_futures)
-            .collect()
-            .map(move |transaction_receipts| EthereumBlock {
-                block,
-                transaction_receipts,
-            })
-    }
-
-    fn get_transaction_receipt<'a>(
-        &'a self,
-        block_hash: H256,
-        tx_hash: H256,
-    ) -> impl Future<Item = TransactionReceipt, Error = BlockIngestorError> + 'a {
-        let logger = self.logger.clone();
-        let web3 = Web3::new(self.web3_transport.clone());
-
-        // Retry, but eventually give up.
-        // The receipt might be missing because the block was uncled, and the transaction never
-        // made it back into the main chain.
-        retry("block ingestor eth_getTransactionReceipt RPC call", &logger)
-            .limit(16)
-            .no_logging()
-            .timeout_secs(60)
-            .run(move || {
-                web3.eth()
-                    .transaction_receipt(tx_hash)
-                    .map_err(move |e| {
-                        format_err!(
-                            "could not get transaction receipt {} from Ethereum: {}",
-                            tx_hash,
-                            e
-                        ).into()
-                    }).and_then(move |receipt_opt| {
-                        receipt_opt.ok_or_else(move || {
-                            // No receipt was returned.
-                            //
-                            // This can be because the Ethereum node no longer considers
-                            // this block to be part of the main chain, and so the transaction is
-                            // no longer in the main chain.  Nothing we can do from here except
-                            // give up trying to ingest this block.
-                            //
-                            // This could also be because the receipt is simply not available yet.
-                            // For that case, we should retry until it becomes available.
-                            BlockIngestorError::BlockUnavailable(block_hash)
-                        })
-                    })
-            }).map_err(move |e| {
-                e.into_inner().unwrap_or_else(move || {
-                    // Timed out
-                    format_err!(
-                        "Ethereum node took too long to return transaction receipt {}",
-                        tx_hash
-                    ).into()
-                })
-            }).and_then(move |receipt| {
-                // Check if receipt is for the right block
-                if receipt.block_hash != block_hash {
-                    // If the receipt came from a different block, then the Ethereum node
-                    // no longer considers this block to be in the main chain.
-                    // Nothing we can do from here except give up trying to ingest this
-                    // block.
-                    // There is no way to get the transaction receipt from this block.
-                    Err(BlockIngestorError::BlockUnavailable(block_hash))
-                } else {
-                    Ok(receipt)
+            .and_then(move |head_ptr_opt| -> Box<Future<Item=_, Error=_> + Send> {
+                if head_ptr_opt.is_some() && latest_block_ptr.number <= head_ptr_opt.unwrap().number {
+                    return Box::new(future::ok(()));
                 }
+
+                // Cast to i64. Negative numbers work well with cmp::max and cmp::min.
+                let head_ptr_number = head_ptr_opt.map(|head_ptr| head_ptr.number).unwrap_or(0) as i64;
+                let latest_number = latest_block_ptr.number as i64;
+                let required_ancestor_count = self.ancestor_count as i64;
+
+                Box::new(future::loop_fn(latest_number, move |last_loaded_block_number| -> Box<Future<Item=_, Error=_> + Send> {
+                    let lowest_needed_number = ::std::cmp::max(head_ptr_number + 1, latest_number - required_ancestor_count);
+
+                    if last_loaded_block_number <= lowest_needed_number {
+                        return Box::new(future::ok(future::Loop::Break(())));
+                    }
+
+                    Box::new(future::result(self.chain_store.find_highest_block_number_below(last_loaded_block_number as u64))
+                        .from_err()
+                        .and_then(move |highest_available_opt| -> Box<Future<Item=_, Error=_> + Send> {
+                            let highest_available = highest_available_opt.unwrap_or(0) as i64;
+
+                            // TODO configurable batch size
+                            let range_minimum = ::std::cmp::max(lowest_needed_number, last_loaded_block_number - 1000);
+
+                            let range_start = ::std::cmp::max(highest_available + 1, range_minimum);
+                            let range_end = last_loaded_block_number - 1;
+
+                            if range_start > range_end {
+                                // Skip this range
+                                return Box::new(future::ok(future::Loop::Continue(range_minimum)));
+                            }
+
+                            let block_count = range_end - range_start + 1;
+                            if block_count > 30 {
+                                debug!(self.logger, "Preloading {} blocks in range [{}, {}]", block_count, range_start, range_end);
+                            }
+
+                            let blocks = self.eth_adapter.blocks(
+                                &self.logger,
+                                (range_start..range_end).into_iter()
+                                    .rev()
+                                    .map(|i| BlockId::Number((i as u64).into()))
+                                    .collect()
+                            );
+
+                            Box::new(
+                                self.chain_store.upsert_blocks(blocks)
+                                .from_err()
+                                .and_then(move |()| {
+                                    future::ok(future::Loop::Continue(range_minimum))
+                                })
+                            )
+                        })
+                    )
+                }))
             })
     }
 
@@ -265,77 +229,15 @@ where
     /// one of the missing blocks' hashes.
     fn ingest_blocks<
         'a,
-        B: Stream<Item = EthereumBlock, Error = BlockIngestorError> + Send + 'a,
+        B: Stream<Item = EthereumBlock, Error = EthereumAdapterError> + Send + 'a,
     >(
         &'a self,
         blocks: B,
-    ) -> impl Future<Item = Vec<H256>, Error = BlockIngestorError> + Send + 'a {
+    ) -> impl Future<Item = Vec<H256>, Error = EthereumAdapterError> + Send + 'a {
         self.chain_store.upsert_blocks(blocks).and_then(move |()| {
             self.chain_store
                 .attempt_chain_head_update(self.ancestor_count)
-                .map_err(BlockIngestorError::from)
+                .map_err(EthereumAdapterError::from)
         })
-    }
-
-    /// Requests the specified blocks via web3, returning them in a stream (potentially out of
-    /// order).
-    fn get_blocks<'a>(
-        &'a self,
-        block_hashes: &[H256],
-    ) -> Box<Stream<Item = EthereumBlock, Error = BlockIngestorError> + Send + 'a> {
-        // Don't bother with a batch request if nothing to request
-        if block_hashes.is_empty() {
-            return Box::new(stream::empty());
-        }
-
-        let batching_web3 = Web3::new(Batch::new(self.web3_transport.clone()));
-
-        // Add requests to batch
-        let block_futures = block_hashes
-            .into_iter()
-            .map(|block_hash| {
-                let block_hash = block_hash.to_owned();
-
-                batching_web3
-                    .eth()
-                    .block_with_txs(BlockId::from(block_hash))
-                    .map_err(|e| format_err!("could not get block from Ethereum: {}", e).into())
-                    .and_then(move |block_opt| {
-                        block_opt.ok_or_else(|| BlockIngestorError::BlockUnavailable(block_hash))
-                    }).and_then(move |block| self.load_full_block(block))
-            })
-            // Collect to ensure that `block_with_txs` calls happen before `submit_batch`
-            .collect::<Vec<_>>();
-
-        // Submit all requests in batch
-        Box::new(
-            batching_web3
-                .transport()
-                .submit_batch()
-                .map_err(|e| format_err!("could not get blocks from Ethereum: {}", e).into())
-                .map(|_| stream::futures_unordered(block_futures))
-                .flatten_stream(),
-        )
-    }
-}
-
-#[derive(Debug, Fail)]
-enum BlockIngestorError {
-    /// The Ethereum node does not know about this block for some reason, probably because it
-    /// disappeared in a chain reorg.
-    #[fail(
-        display = "block data unavailable, block was likely uncled (block hash = {:?})",
-        _0
-    )]
-    BlockUnavailable(H256),
-
-    /// An unexpected error occurred.
-    #[fail(display = "error in block ingestor: {}", _0)]
-    Unknown(Error),
-}
-
-impl From<Error> for BlockIngestorError {
-    fn from(e: Error) -> Self {
-        BlockIngestorError::Unknown(e)
     }
 }

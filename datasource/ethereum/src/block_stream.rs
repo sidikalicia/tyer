@@ -578,7 +578,12 @@ where
                     Box::new(
                         ctx.eth_adapter
                             .block_by_hash(&ctx.logger, block_hash)
-                            .and_then(move |block_opt| {
+                            .map_err(|e| match e {
+                                EthereumAdapterError::BlockUnavailable(_) => {
+                                    format_err!("block stream could not load block: {}", e)
+                                }
+                                EthereumAdapterError::Unknown(e) => e,
+                            }).and_then(move |block_opt| {
                                 block_opt.ok_or_else(move || {
                                     format_err!(
                                         "Ethereum node could not find block with hash {}",

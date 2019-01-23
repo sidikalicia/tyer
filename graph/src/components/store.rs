@@ -372,4 +372,11 @@ pub trait ChainStore: Send + Sync + 'static {
         block_ptr: EthereumBlockPointer,
         offset: u64,
     ) -> Result<Option<EthereumBlock>, Error>;
+
+    /// Look in the chain store for blocks with a block number below the specified number,
+    /// and return the highest of those blocks' block numbers.
+    fn find_highest_block_number_below(
+        &self,
+        below_block_number: u64,
+    ) -> Result<Option<u64>, Error>;
 }

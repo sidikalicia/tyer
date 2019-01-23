@@ -189,6 +189,10 @@ impl ChainStore for MockStore {
     ) -> Result<Option<EthereumBlock>, Error> {
         unimplemented!();
     }
+
+    fn find_highest_block_number_below(&self, _: u64) -> Result<Option<u64>, Error> {
+        unimplemented!();
+    }
 }
 
 pub struct FakeStore;
@@ -307,6 +311,10 @@ impl ChainStore for FakeStore {
         _: EthereumBlockPointer,
         _: u64,
     ) -> Result<Option<EthereumBlock>, Error> {
+        unimplemented!();
+    }
+
+    fn find_highest_block_number_below(&self, _: u64) -> Result<Option<u64>, Error> {
         unimplemented!();
     }
 }

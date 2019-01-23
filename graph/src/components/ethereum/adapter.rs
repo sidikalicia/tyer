@@ -1,6 +1,6 @@
 use ethabi::{Bytes, Error as ABIError, Function, ParamType, Token};
 use failure::{Error, SyncFailure};
-use futures::Future;
+use futures::{Future, Stream};
 use slog::Logger;
 use std::collections::HashSet;
 use std::iter::FromIterator;
@@ -77,22 +77,23 @@ impl From<Error> for EthereumContractCallError {
 }
 
 #[derive(Fail, Debug)]
-pub enum EthereumError {
-    #[fail(display = "RPC error: {}", _0)]
-    RpcError(SyncFailure<Web3Error>),
-    #[fail(display = "ABI error: {}", _0)]
-    ABIError(SyncFailure<ABIError>),
+pub enum EthereumAdapterError {
+    /// The Ethereum node does not know about this block for some reason, probably because it
+    /// disappeared in a chain reorg.
+    #[fail(
+        display = "block data unavailable, block was likely uncled (block ID = {:?})",
+        _0
+    )]
+    BlockUnavailable(BlockId),
+
+    /// An unexpected error occurred.
+    #[fail(display = "Ethereum RPC error: {}", _0)]
+    Unknown(Error),
 }
 
-impl From<Web3Error> for EthereumError {
-    fn from(err: Web3Error) -> EthereumError {
-        EthereumError::RpcError(SyncFailure::new(err))
-    }
-}
-
-impl From<ABIError> for EthereumError {
-    fn from(err: ABIError) -> EthereumError {
-        EthereumError::ABIError(SyncFailure::new(err))
+impl From<Error> for EthereumAdapterError {
+    fn from(e: Error) -> Self {
+        EthereumAdapterError::Unknown(e)
     }
 }
 
@@ -145,12 +146,33 @@ pub trait EthereumAdapter: Send + Sync + 'static {
         logger: &Logger,
     ) -> Box<Future<Item = EthereumNetworkIdentifier, Error = Error> + Send>;
 
+    /// Ask the Ethereum node for the latest block.
+    /// Use `load_full_block` to get a full EthereumBlock instance from the result.
+    fn latest_block(
+        &self,
+        logger: &Logger,
+    ) -> Box<Future<Item = Block<Transaction>, Error = Error> + Send>;
+
+    /// Load the additional data needed to produce a full EthereumBlock instance.
+    fn load_full_block(
+        &self,
+        logger: &Logger,
+        block: Block<Transaction>,
+    ) -> Box<Future<Item = EthereumBlock, Error = EthereumAdapterError> + Send>;
+
+    /// Load a batch of blocks.
+    fn blocks(
+        &self,
+        logger: &Logger,
+        block_ids: Vec<BlockId>,
+    ) -> Box<Stream<Item = EthereumBlock, Error = EthereumAdapterError> + Send>;
+
     /// Find a block by its hash.
     fn block_by_hash(
         &self,
         logger: &Logger,
         block_hash: H256,
-    ) -> Box<Future<Item = Option<EthereumBlock>, Error = Error> + Send>;
+    ) -> Box<Future<Item = Option<EthereumBlock>, Error = EthereumAdapterError> + Send>;
 
     /// Find a block by its number.
     ///

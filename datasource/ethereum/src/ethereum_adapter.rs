@@ -317,13 +317,158 @@ where
         )
     }
 
+    fn latest_block(
+        &self,
+        _logger: &Logger,
+    ) -> Box<Future<Item = Block<Transaction>, Error = Error> + Send> {
+        // TODO retry
+        Box::new(
+            self.web3
+                .eth()
+                .block_with_txs(BlockNumber::Latest.into())
+                .map_err(|e| format_err!("could not get latest block from Ethereum: {}", e))
+                .from_err()
+                .and_then(|block_opt| {
+                    block_opt
+                        .ok_or_else(|| format_err!("no latest block returned from Ethereum").into())
+                }),
+        )
+    }
+
+    fn load_full_block(
+        &self,
+        logger: &Logger,
+        block: Block<Transaction>,
+    ) -> Box<Future<Item = EthereumBlock, Error = EthereumAdapterError> + Send> {
+        let web3 = self.web3.clone();
+        let logger = logger.to_owned();
+        let block_hash = block.hash.unwrap();
+
+        // Retry, but eventually give up.
+        // The receipt might be missing because the block was uncled, and the
+        // transaction never made it back into the main chain.
+        Box::new(
+            retry("batch eth_getTransactionReceipt RPC call", &logger)
+                .limit(32)
+                .timeout_secs(60)
+                .run(move || {
+                    let block = block.clone();
+                    let batching_web3 = Web3::new(Batch::new(web3.transport().clone()));
+
+                    let receipt_futures = block
+                        .transactions
+                        .iter()
+                        .map(|tx| {
+                            let tx_hash = tx.hash;
+
+                            batching_web3
+                                .eth()
+                                .transaction_receipt(tx_hash)
+                                .map_err(SyncFailure::new)
+                                .from_err()
+                                .and_then(move |receipt_opt| {
+                                    // Might be transient, but might be permanent due to reorg
+                                    receipt_opt.ok_or_else(move || {
+                                        format_err!(
+                                            "Ethereum node is missing transaction receipt: {}",
+                                            tx_hash
+                                        )
+                                    })
+                                }).and_then(move |receipt| {
+                                    // Check if receipt is for the right block
+                                    if receipt.block_hash != block_hash {
+                                        // If the receipt came from a different block, then the Ethereum
+                                        // node no longer considers this block to be in the main chain.
+                                        // Nothing we can do from here except give up trying to ingest this
+                                        // block.
+                                        // There is no way to get the transaction receipt from this block.
+                                        Err(format_err!(
+                                            "could not get receipt for block {:?} \
+                                             because block is off the main chain",
+                                            block_hash
+                                        ))
+                                    } else {
+                                        Ok(receipt)
+                                    }
+                                })
+                        }).collect::<Vec<_>>();
+
+                    batching_web3
+                        .transport()
+                        .submit_batch()
+                        .map_err(SyncFailure::new)
+                        .from_err()
+                        .and_then(move |_| {
+                            stream::futures_ordered(receipt_futures).collect().map(
+                                move |transaction_receipts| EthereumBlock {
+                                    block,
+                                    transaction_receipts,
+                                },
+                            )
+                        })
+                }).map_err(move |e| {
+                    e.into_inner().unwrap_or_else(move || {
+                        format_err!(
+                            "Ethereum node took too long to return receipts for block {}",
+                            block_hash
+                        )
+                    })
+                }).from_err(),
+        )
+    }
+
+    fn blocks(
+        &self,
+        logger: &Logger,
+        block_ids: Vec<BlockId>,
+    ) -> Box<Stream<Item = EthereumBlock, Error = EthereumAdapterError> + Send> {
+        let self_clone = self.clone();
+        let logger = logger.to_owned();
+
+        // Don't bother with a batch request if nothing to request
+        if block_ids.is_empty() {
+            return Box::new(stream::empty());
+        }
+
+        let batching_web3 = Web3::new(Batch::new(self.web3.transport().clone()));
+
+        // Add requests to batch
+        let block_futures = block_ids
+            .into_iter()
+            .map(|block_id| {
+                let self_clone = self_clone.clone();
+                let logger = logger.clone();
+                let block_id = block_id.to_owned();
+
+                batching_web3
+                    .eth()
+                    .block_with_txs(block_id.clone())
+                    .map_err(|e| format_err!("could not get block from Ethereum: {}", e).into())
+                    .and_then(move |block_opt| {
+                        block_opt.ok_or_else(|| EthereumAdapterError::BlockUnavailable(block_id))
+                    }).and_then(move |block| self_clone.load_full_block(&logger, block))
+            })
+            // Collect to ensure that `block_with_txs` calls happen before `submit_batch`
+            .collect::<Vec<_>>();
+
+        // Submit all requests in batch
+        Box::new(
+            batching_web3
+                .transport()
+                .submit_batch()
+                .map_err(|e| format_err!("could not get blocks from Ethereum: {}", e).into())
+                .map(|_| stream::futures_unordered(block_futures))
+                .flatten_stream(),
+        )
+    }
+
     fn block_by_hash(
         &self,
         logger: &Logger,
         block_hash: H256,
-    ) -> Box<Future<Item = Option<EthereumBlock>, Error = Error> + Send> {
+    ) -> Box<Future<Item = Option<EthereumBlock>, Error = EthereumAdapterError> + Send> {
         let web3 = self.web3.clone();
-        let logger = logger.clone();
+        let logger = logger.to_owned();
 
         let block_opt_future = retry("eth_getBlockByHash RPC call", &logger)
             .no_limit()
@@ -337,86 +482,13 @@ where
                 e.into_inner().unwrap_or_else(move || {
                     format_err!("Ethereum node took too long to return block {}", block_hash)
                 })
-            });
+            }).from_err();
 
-        let web3 = self.web3.clone();
-        Box::new(block_opt_future.and_then(move |block_opt| {
-            let web3 = web3.clone();
-
-            let block = block_opt?;
-
-            // Retry, but eventually give up.
-            // The receipt might be missing because the block was uncled, and the
-            // transaction never made it back into the main chain.
-            Some(
-                retry("batch eth_getTransactionReceipt RPC call", &logger)
-                    .limit(32)
-                    .timeout_secs(60)
-                    .run(move || {
-                        let block = block.clone();
-                        let batching_web3 = Web3::new(Batch::new(web3.transport().clone()));
-
-                        let receipt_futures = block
-                            .transactions
-                            .iter()
-                            .map(|tx| {
-                                let tx_hash = tx.hash;
-
-                                batching_web3
-                                    .eth()
-                                    .transaction_receipt(tx_hash)
-                                    .map_err(SyncFailure::new)
-                                    .from_err()
-                                    .and_then(move |receipt_opt| {
-                                        // Might be transient, but might be permanent due to reorg
-                                        receipt_opt.ok_or_else(move || {
-                                            format_err!(
-                                                "Ethereum node is missing transaction receipt: {}",
-                                                tx_hash
-                                            )
-                                        })
-                                    }).and_then(move |receipt| {
-                                        // Check if receipt is for the right block
-                                        if receipt.block_hash != block_hash {
-                                            // If the receipt came from a different block, then the Ethereum
-                                            // node no longer considers this block to be in the main chain.
-                                            // Nothing we can do from here except give up trying to ingest this
-                                            // block.
-                                            // There is no way to get the transaction receipt from this block.
-                                            Err(format_err!(
-                                                "could not get receipt for block {:?} \
-                                                 because block is off the main chain",
-                                                block_hash
-                                            ))
-                                        } else {
-                                            Ok(receipt)
-                                        }
-                                    })
-                            }).collect::<Vec<_>>();
-
-                        batching_web3
-                            .transport()
-                            .submit_batch()
-                            .map_err(SyncFailure::new)
-                            .from_err()
-                            .and_then(move |_| {
-                                stream::futures_ordered(receipt_futures).collect().map(
-                                    move |transaction_receipts| EthereumBlock {
-                                        block,
-                                        transaction_receipts,
-                                    },
-                                )
-                            })
-                    }).map_err(move |e| {
-                        e.into_inner().unwrap_or_else(move || {
-                            format_err!(
-                                "Ethereum node took too long to return receipts for block {}",
-                                block_hash
-                            )
-                        })
-                    }),
-            )
-        }))
+        let self_clone = self.clone();
+        Box::new(
+            block_opt_future
+                .and_then(move |block_opt| Some(self_clone.load_full_block(&logger, block_opt?))),
+        )
     }
 
     fn block_hash_by_block_number(

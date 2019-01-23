@@ -856,4 +856,26 @@ impl ChainStore for Store {
                 })
             }).map_err(Error::from)
     }
+
+    fn find_highest_block_number_below(
+        &self,
+        below_block_number: u64,
+    ) -> Result<Option<u64>, Error> {
+        use db_schema::ethereum_blocks::dsl::*;
+
+        assert!(below_block_number <= (i64::max_value() as u64));
+
+        ethereum_blocks
+            .select(number)
+            .filter(number.lt(below_block_number as i64))
+            .order(number.desc())
+            .first::<i64>(&*self.conn.lock().unwrap())
+            .optional()
+            .map(|block_number_opt| {
+                block_number_opt.map(|block_number| {
+                    assert!(block_number >= 0);
+                    block_number as u64
+                })
+            }).map_err(Error::from)
+    }
 }
