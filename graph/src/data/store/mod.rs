@@ -439,6 +439,10 @@ impl<'a> From<Vec<(&'a str, Value)>> for Entity {
     }
 }
 
+pub trait TryFromEntity: Sized {
+    fn try_from_entity(entity: Entity) -> Result<Self, Error>;
+}
+
 #[test]
 fn value_bytes() {
     let graphql_value = query::Value::String("0x8f494c66afc1d3f8ac1b45df21f02a46".to_owned());

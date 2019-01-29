@@ -703,6 +703,18 @@ impl StoreTrait for Store {
         self.get_entity(&*conn, &key.subgraph_id, &key.entity_type, &key.entity_id)
     }
 
+    fn get_typed<T>(&self, key: EntityKey) -> Result<Option<T>, QueryExecutionError>
+    where
+        T: TryFromEntity,
+    {
+        match self.get(key)? {
+            Some(entity) => Ok(Some(
+                T::try_from_entity(entity).map_err(QueryExecutionError::StoreError)?,
+            )),
+            None => Ok(None),
+        }
+    }
+
     fn find(&self, query: EntityQuery) -> Result<Vec<Entity>, QueryExecutionError> {
         let conn = self
             .conn
@@ -907,6 +919,26 @@ impl SubgraphDeploymentStore for Store {
         }
 
         Ok(schema)
+    }
+
+    fn subgraph_version_from_deployment(
+        &self,
+        id: &SubgraphDeploymentId,
+    ) -> Result<SubgraphVersionEntity, Error> {
+        let query = SubgraphVersionEntity::query_from_deployment(id);
+        self.find(query)?
+            .first()
+            .ok_or_else(|| format_err!("Subgraph version for deployment {} not found", id,))
+            .and_then(SubgraphVersionEntity::try_from_entity)
+    }
+
+    fn subgraph_from_version(
+        &self,
+        version: &SubgraphVersionEntity,
+    ) -> Result<SubgraphEntity, Error> {
+        let key = SubgraphEntity::key_from_version(version);
+        self.get_typed(key)?
+            .ok_or_else(|| format_err!("Subgraph for version not found: {:?}", version))
     }
 }
 

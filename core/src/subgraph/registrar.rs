@@ -8,23 +8,25 @@ use graph::prelude::{
     SubgraphRegistrar as SubgraphRegistrarTrait, *,
 };
 
-pub struct SubgraphRegistrar<L, P, S, CS> {
+pub struct SubgraphRegistrar<L, P, S, CS, SDS> {
     logger: Logger,
     resolver: Arc<L>,
     provider: Arc<P>,
     store: Arc<S>,
     chain_store: Arc<CS>,
+    subgraph_store: Arc<SDS>,
     node_id: NodeId,
     version_switching_mode: SubgraphVersionSwitchingMode,
     assignment_event_stream_cancel_guard: CancelGuard, // cancels on drop
 }
 
-impl<L, P, S, CS> SubgraphRegistrar<L, P, S, CS>
+impl<L, P, S, CS> SubgraphRegistrar<L, P, S, CS, SDS>
 where
     L: LinkResolver,
     P: SubgraphAssignmentProviderTrait,
     S: Store,
     CS: ChainStore,
+    SDS: SubgraphDeploymentStore,
 {
     pub fn new(
         logger: Logger,
@@ -32,6 +34,7 @@ where
         provider: Arc<P>,
         store: Arc<S>,
         chain_store: Arc<CS>,
+        subgraph_store: Arc<SDS>,
         node_id: NodeId,
         version_switching_mode: SubgraphVersionSwitchingMode,
     ) -> Self {
@@ -43,6 +46,7 @@ where
             provider,
             store,
             chain_store,
+            subgraph_store,
             node_id,
             version_switching_mode,
             assignment_event_stream_cancel_guard: CancelGuard::new(),
@@ -111,6 +115,7 @@ where
 
     pub fn assignment_events(&self) -> impl Stream<Item = AssignmentEvent, Error = Error> + Send {
         let store = self.store.clone();
+        let deployment_store = self.store.clone();
         let node_id = self.node_id.clone();
 
         store
@@ -136,8 +141,24 @@ where
                                     if let Some(entity) = entity_opt {
                                         if entity.get("nodeId") == Some(&node_id.to_string().into())
                                         {
+                                            let version = deployment_store
+                                                .subgraph_version_from_deployment_id(&subgraph_hash)
+                                                .map_err(|()| {
+                                                    format_err!(
+                                                        "Failed to find subgraph version for deployment {}",
+                                                        subgraph_hash
+                                                    )
+                                                });
+
+                                            let subgraph = deployment_store
+                                                .subgraph_from_version(&version)
+                                                .map_err(|()| {
+                                                    format_err!("Failed to find subgraph for deployment {}", subgraph_hash),
+                                                });
+
                                             // Start subgraph on this node
                                             Box::new(stream::once(Ok(AssignmentEvent::Add {
+                                                subgraph_name: subgraph.name,
                                                 subgraph_id: subgraph_hash,
                                                 node_id: node_id.clone(),
                                             })))

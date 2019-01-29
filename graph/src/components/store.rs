@@ -353,6 +353,11 @@ pub trait Store: Send + Sync + 'static {
     /// Looks up an entity using the given store key.
     fn get(&self, key: EntityKey) -> Result<Option<Entity>, QueryExecutionError>;
 
+    /// Looks up an entity using the given store key and converts it to the output type.
+    fn get_typed<T>(&self, key: EntityKey) -> Result<Option<T>, QueryExecutionError>
+    where
+        T: TryFromEntity;
+
     /// Queries the store for entities that match the store query.
     fn find(&self, query: EntityQuery) -> Result<Vec<Entity>, QueryExecutionError>;
 
@@ -687,6 +692,16 @@ pub trait Store: Send + Sync + 'static {
 
 pub trait SubgraphDeploymentStore: Send + Sync + 'static {
     fn subgraph_schema(&self, subgraph_id: SubgraphDeploymentId) -> Result<Schema, Error>;
+
+    fn subgraph_version_from_deployment(
+        &self,
+        id: &SubgraphDeploymentId,
+    ) -> Result<SubgraphVersionEntity, Error>;
+
+    fn subgraph_from_version(
+        &self,
+        version: &SubgraphVersionEntity,
+    ) -> Result<SubgraphEntity, Error>;
 }
 
 /// Common trait for blockchain store implementations.

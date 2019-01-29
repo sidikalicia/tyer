@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use std::sync::Mutex;
 
 use graph::components::store::*;
+use graph::data::subgraph::schema::*;
 use graph::prelude::*;
 use graph::web3::types::H256;
 
@@ -301,6 +302,13 @@ impl Store for MockStore {
 impl SubgraphDeploymentStore for MockStore {
     fn subgraph_schema(&self, subgraph_id: SubgraphDeploymentId) -> Result<Schema, Error> {
         Ok(self.schemas.get(&subgraph_id).unwrap().clone())
+    }
+
+    fn subgraph_version_from_deploymebt_id(
+        &self,
+        deployment_id: &SubgraphDeploymentId,
+    ) -> Result<SubgraphVersionEntity, Error> {
+        unimplemented!()
     }
 }
 

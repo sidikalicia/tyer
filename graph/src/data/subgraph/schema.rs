@@ -24,7 +24,7 @@ use components::ethereum::EthereumBlockPointer;
 use components::store::{
     AttributeIndexDefinition, EntityFilter, EntityKey, EntityOperation, EntityQuery,
 };
-use data::store::{Entity, NodeId, SubgraphEntityPair, Value, ValueType};
+use data::store::{Entity, NodeId, SubgraphEntityPair, TryFromEntity, Value, ValueType};
 use data::subgraph::{SubgraphManifest, SubgraphName};
 
 /// ID of the subgraph of subgraphs.
@@ -69,6 +69,41 @@ impl TypedEntity for SubgraphEntity {
     type IdType = String;
 }
 
+impl TryFromEntity for SubgraphEntity {
+    fn try_from_entity(entity: Entity) -> Result<Self, Error> {
+        let make_error = |attr: &str, expected_type: &str| {
+            format_err!(
+                "Value of \"{}\" is not set or not a {}",
+                attr,
+                expected_type
+            )
+        };
+
+        let mut entity = entity;
+
+        Ok(SubgraphEntity {
+            name: SubgraphName::new(
+                entity
+                    .remove("name")
+                    .and_then(|value| value.as_string())
+                    .ok_or_else(|| make_error("name", "String"))?,
+            )
+            .map_err(|()| format_err!("Invalid subgraph name"))?,
+            current_version_id: entity
+                .remove("current_version_id")
+                .and_then(|value| value.as_string()),
+            pending_version_id: entity
+                .remove("pending_version_id")
+                .and_then(|value| value.as_string()),
+            created_at: entity
+                .remove("created_at")
+                .and_then(|value| value.as_bigint())
+                .map(|n| n.to_u64())
+                .ok_or_else(|| make_error("created_at", "BigInt"))?,
+        })
+    }
+}
+
 impl SubgraphEntity {
     pub fn new(
         name: SubgraphName,
@@ -81,6 +116,14 @@ impl SubgraphEntity {
             current_version_id,
             pending_version_id,
             created_at,
+        }
+    }
+
+    pub fn key_from_version(version: &SubgraphVersionEntity) -> EntityKey {
+        EntityKey {
+            subgraph_id: SUBGRAPHS_ID.to_owned(),
+            entity_type: Self::TYPENAME.to_owned(),
+            entity_id: version.subgraph_id.clone(),
         }
     }
 
@@ -163,6 +206,17 @@ impl SubgraphVersionEntity {
         entity.set("deployment", self.deployment_id.to_string());
         entity.set("createdAt", self.created_at);
         vec![set_entity_operation(Self::TYPENAME, id, entity)]
+    }
+
+    pub fn query_from_deployment(id: &SubgraphDeploymentId) -> EntityQuery {
+        EntityQuery::new(id.to_owned(), Self::TYPENAME)
+            .filter(EntityFilter::new_equal("deployment", id.to_string()))
+    }
+}
+
+impl TryFromEntity for SubgraphVersionEntity {
+    pub fn try_from_entity(entity: Entity) -> Result<Self, Error> {
+        TODO
     }
 }
 
