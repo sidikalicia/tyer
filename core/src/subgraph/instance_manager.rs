@@ -73,9 +73,12 @@ impl SubgraphInstanceManager {
             use self::SubgraphAssignmentProviderEvent::*;
 
             match event {
-                SubgraphStart(manifest) => {
+                SubgraphStart(name, manifest) => {
                     // Write subgraph logs to the terminal and, if enabled, Elasticsearch
-                    let term_logger = logger.new(o!("subgraph_id" => manifest.id.to_string()));
+                    let term_logger = logger.new(o!(
+                        "subgraph_name" => name.to_string(),
+                        "subgraph_id" => manifest.id.to_string()
+                    ));
                     let logger = elastic_config
                         .clone()
                         .map(|elastic_config| {
@@ -86,6 +89,7 @@ impl SubgraphInstanceManager {
                                         general: elastic_config,
                                         index: String::from("subgraph-logs"),
                                         document_type: String::from("log"),
+                                        subgraph_name: name,
                                         subgraph_id: manifest.id.clone(),
                                         flush_interval: Duration::from_secs(5),
                                     },

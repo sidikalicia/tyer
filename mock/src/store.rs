@@ -131,6 +131,10 @@ impl Store for MockStore {
             .map(|entity| entity.to_owned()))
     }
 
+    fn get_typed<T>(&self, key: EntityKey) -> Result<Option<T>, QueryExecutionError> {
+        unimplemented!()
+    }
+
     fn find(&self, query: EntityQuery) -> Result<Vec<Entity>, QueryExecutionError> {
         self.execute_query(&self.entities.lock().unwrap(), query)
     }
@@ -304,10 +308,17 @@ impl SubgraphDeploymentStore for MockStore {
         Ok(self.schemas.get(&subgraph_id).unwrap().clone())
     }
 
-    fn subgraph_version_from_deploymebt_id(
+    fn subgraph_version_from_deployment(
         &self,
-        deployment_id: &SubgraphDeploymentId,
+        _id: &SubgraphDeploymentId,
     ) -> Result<SubgraphVersionEntity, Error> {
+        unimplemented!()
+    }
+
+    fn subgraph_from_version(
+        &self,
+        _version: &SubgraphVersionEntity,
+    ) -> Result<SubgraphEntity, Error> {
         unimplemented!()
     }
 }
@@ -360,6 +371,10 @@ pub struct FakeStore;
 impl Store for FakeStore {
     fn get(&self, _: EntityKey) -> Result<Option<Entity>, QueryExecutionError> {
         unimplemented!();
+    }
+
+    fn get_typed<T>(&self, _key: EntityKey) -> Result<Option<T>, QueryExecutionError> {
+        unimplemented!()
     }
 
     fn find(&self, _: EntityQuery) -> Result<Vec<Entity>, QueryExecutionError> {

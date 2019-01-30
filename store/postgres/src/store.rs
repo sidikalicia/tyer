@@ -925,10 +925,8 @@ impl SubgraphDeploymentStore for Store {
         &self,
         id: &SubgraphDeploymentId,
     ) -> Result<SubgraphVersionEntity, Error> {
-        let query = SubgraphVersionEntity::query_from_deployment(id);
-        self.find(query)?
-            .first()
-            .ok_or_else(|| format_err!("Subgraph version for deployment {} not found", id,))
+        self.find_one(SubgraphVersionEntity::query_from_deployment(id))?
+            .ok_or_else(|| format_err!("Subgraph version for deployment {} not found", id))
             .and_then(SubgraphVersionEntity::try_from_entity)
     }
 
@@ -936,8 +934,7 @@ impl SubgraphDeploymentStore for Store {
         &self,
         version: &SubgraphVersionEntity,
     ) -> Result<SubgraphEntity, Error> {
-        let key = SubgraphEntity::key_from_version(version);
-        self.get_typed(key)?
+        self.get_typed(SubgraphEntity::key_from_version(version))?
             .ok_or_else(|| format_err!("Subgraph for version not found: {:?}", version))
     }
 }

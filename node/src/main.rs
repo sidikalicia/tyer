@@ -463,6 +463,7 @@ fn async_main() -> impl Future<Item = (), Error = ()> + Send + 'static {
         Arc::new(subgraph_provider),
         store.clone(),
         store.clone(),
+        store.clone(),
         node_id.clone(),
         version_switching_mode,
     ));

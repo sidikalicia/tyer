@@ -58,10 +58,10 @@ pub trait TypedEntity {
 
 #[derive(Debug)]
 pub struct SubgraphEntity {
-    name: SubgraphName,
-    current_version_id: Option<String>,
-    pending_version_id: Option<String>,
-    created_at: u64,
+    pub name: SubgraphName,
+    pub current_version_id: Option<String>,
+    pub pending_version_id: Option<String>,
+    pub created_at: u64,
 }
 
 impl TypedEntity for SubgraphEntity {
@@ -70,36 +70,32 @@ impl TypedEntity for SubgraphEntity {
 }
 
 impl TryFromEntity for SubgraphEntity {
-    fn try_from_entity(entity: Entity) -> Result<Self, Error> {
-        let make_error = |attr: &str, expected_type: &str| {
-            format_err!(
-                "Value of \"{}\" is not set or not a {}",
-                attr,
-                expected_type
-            )
-        };
+    const ENTITY_TYPE: &'static str = "Subgraph";
 
-        let mut entity = entity;
-
+    fn try_from_entity(mut entity: Entity) -> Result<Self, Error> {
         Ok(SubgraphEntity {
-            name: SubgraphName::new(
-                entity
-                    .remove("name")
-                    .and_then(|value| value.as_string())
-                    .ok_or_else(|| make_error("name", "String"))?,
-            )
+            name: SubgraphName::new(Self::extract(&mut entity, "name", "String", |value| {
+                value.as_string()
+            })?)
             .map_err(|()| format_err!("Invalid subgraph name"))?,
-            current_version_id: entity
-                .remove("current_version_id")
-                .and_then(|value| value.as_string()),
-            pending_version_id: entity
-                .remove("pending_version_id")
-                .and_then(|value| value.as_string()),
-            created_at: entity
-                .remove("created_at")
-                .and_then(|value| value.as_bigint())
-                .map(|n| n.to_u64())
-                .ok_or_else(|| make_error("created_at", "BigInt"))?,
+
+            current_version_id: Self::extract_optional(
+                &mut entity,
+                "currentVersion",
+                "String",
+                |value| value.as_string(),
+            )?,
+
+            pending_version_id: Self::extract_optional(
+                &mut entity,
+                "pendingVersion",
+                "String",
+                |value| value.as_string(),
+            )?,
+
+            created_at: Self::extract(&mut entity, "createdAt", "BigInt", |value| {
+                value.as_bigint().map(|n| n.to_u64())
+            })?,
         })
     }
 }
@@ -209,14 +205,30 @@ impl SubgraphVersionEntity {
     }
 
     pub fn query_from_deployment(id: &SubgraphDeploymentId) -> EntityQuery {
-        EntityQuery::new(id.to_owned(), Self::TYPENAME)
+        EntityQuery::new(SUBGRAPHS_ID.to_owned(), Self::TYPENAME)
             .filter(EntityFilter::new_equal("deployment", id.to_string()))
     }
 }
 
 impl TryFromEntity for SubgraphVersionEntity {
-    pub fn try_from_entity(entity: Entity) -> Result<Self, Error> {
-        TODO
+    const ENTITY_TYPE: &'static str = "SubgraphVersion";
+
+    fn try_from_entity(mut entity: Entity) -> Result<Self, Error> {
+        Ok(SubgraphVersionEntity {
+            subgraph_id: Self::extract(&mut entity, "subgraph", "String", |value| {
+                value.as_string()
+            })?,
+            deployment_id: SubgraphDeploymentId::new(Self::extract(
+                &mut entity,
+                "deployment",
+                "String",
+                |value| value.as_string(),
+            )?)
+            .map_err(|()| format_err!("Invalid subgraph deployment ID"))?,
+            created_at: Self::extract(&mut entity, "createdAt", "BigInt", |value| {
+                value.as_bigint().map(|n| n.to_u64())
+            })?,
+        })
     }
 }
 

@@ -101,6 +101,8 @@ pub struct ElasticDrainConfig {
     pub index: String,
     /// The Elasticsearch type to use for logs.
     pub document_type: String,
+    /// The subgraph name that the drain is for.
+    pub subgraph_name: SubgraphName,
     /// The subgraph ID that the drain is for.
     pub subgraph_id: SubgraphDeploymentId,
     /// The batching interval.

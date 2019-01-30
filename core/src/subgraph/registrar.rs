@@ -20,7 +20,7 @@ pub struct SubgraphRegistrar<L, P, S, CS, SDS> {
     assignment_event_stream_cancel_guard: CancelGuard, // cancels on drop
 }
 
-impl<L, P, S, CS> SubgraphRegistrar<L, P, S, CS, SDS>
+impl<L, P, S, CS, SDS> SubgraphRegistrar<L, P, S, CS, SDS>
 where
     L: LinkResolver,
     P: SubgraphAssignmentProviderTrait,
@@ -115,7 +115,7 @@ where
 
     pub fn assignment_events(&self) -> impl Stream<Item = AssignmentEvent, Error = Error> + Send {
         let store = self.store.clone();
-        let deployment_store = self.store.clone();
+        let subgraph_store = self.subgraph_store.clone();
         let node_id = self.node_id.clone();
 
         store
@@ -141,20 +141,13 @@ where
                                     if let Some(entity) = entity_opt {
                                         if entity.get("nodeId") == Some(&node_id.to_string().into())
                                         {
-                                            let version = deployment_store
-                                                .subgraph_version_from_deployment_id(&subgraph_hash)
-                                                .map_err(|()| {
-                                                    format_err!(
-                                                        "Failed to find subgraph version for deployment {}",
-                                                        subgraph_hash
-                                                    )
-                                                });
-
-                                            let subgraph = deployment_store
-                                                .subgraph_from_version(&version)
-                                                .map_err(|()| {
-                                                    format_err!("Failed to find subgraph for deployment {}", subgraph_hash),
-                                                });
+                                            let subgraph = match get_subgraph_for_deployment_id(subgraph_store.clone(), &subgraph_hash) {
+                                                Ok(subgraph) => subgraph,
+                                                Err(e) => return Box::new(stream::once(Err(format_err!(
+                                                    "Failed to resolve subgraph for deployment {}: {}",
+                                                    subgraph_hash, e,
+                                                )))),
+                                            };
 
                                             // Start subgraph on this node
                                             Box::new(stream::once(Ok(AssignmentEvent::Add {
@@ -194,6 +187,7 @@ where
     fn start_assigned_subgraphs(&self) -> impl Future<Item = (), Error = Error> {
         let provider = self.provider.clone();
         let logger = self.logger.clone();
+        let subgraph_store = self.subgraph_store.clone();
 
         // Create a query to find all assignments with this node ID
         let assignment_query = SubgraphDeploymentAssignmentEntity::query()
@@ -216,19 +210,26 @@ where
             })
             .and_then(move |subgraph_ids| {
                 let provider = provider.clone();
+                let subgraph_store = subgraph_store.clone();
+
                 stream::iter_ok(subgraph_ids).for_each(move |id| {
-                    start_subgraph(id, &*provider, logger.clone()).map_err(|()| unreachable!())
+                    let subgraph = get_subgraph_for_deployment_id(subgraph_store.clone(), &id)
+                        .expect("failed to resolve subgraph for deployment");
+
+                    start_subgraph(subgraph.name, id, &*provider, logger.clone())
+                        .map_err(|()| unreachable!())
                 })
             })
     }
 }
 
-impl<L, P, S, CS> SubgraphRegistrarTrait for SubgraphRegistrar<L, P, S, CS>
+impl<L, P, S, CS, SDS> SubgraphRegistrarTrait for SubgraphRegistrar<L, P, S, CS, SDS>
 where
     L: LinkResolver,
     P: SubgraphAssignmentProviderTrait,
     S: Store,
     CS: ChainStore,
+    SDS: SubgraphDeploymentStore,
 {
     fn create_subgraph(
         &self,
@@ -322,9 +323,13 @@ where
 
     match event {
         AssignmentEvent::Add {
+            subgraph_name,
             subgraph_id,
             node_id: _,
-        } => Box::new(start_subgraph(subgraph_id, &*provider, logger).map_err(|()| unreachable!())),
+        } => Box::new(
+            start_subgraph(subgraph_name, subgraph_id, &*provider, logger)
+                .map_err(|()| unreachable!()),
+        ),
         AssignmentEvent::Remove {
             subgraph_id,
             node_id: _,
@@ -341,14 +346,15 @@ where
     }
 }
 
-// Never errors.
+/// Never errors.
 fn start_subgraph<P: SubgraphAssignmentProviderTrait>(
+    subgraph_name: SubgraphName,
     subgraph_id: SubgraphDeploymentId,
     provider: &P,
     logger: Logger,
 ) -> impl Future<Item = (), Error = ()> + 'static {
     provider
-        .start(subgraph_id.clone())
+        .start(subgraph_name.clone(), subgraph_id.clone())
         .then(move |result| -> Result<(), _> {
             match result {
                 Ok(()) => Ok(()),
@@ -361,6 +367,7 @@ fn start_subgraph<P: SubgraphAssignmentProviderTrait>(
                         logger,
                         "Subgraph instance failed to start";
                         "error" => e.to_string(),
+                        "subgraph_name" => subgraph_name.to_string(),
                         "subgraph_id" => subgraph_id.to_string()
                     );
                     Ok(())
@@ -676,6 +683,15 @@ fn get_subgraph_version_deployment_id(
             .unwrap(),
     )
     .unwrap())
+}
+
+/// Performs a reverse lookup from a deployment to a subgraph.
+fn get_subgraph_for_deployment_id(
+    subgraph_store: Arc<impl SubgraphDeploymentStore>,
+    deployment_id: &SubgraphDeploymentId,
+) -> Result<SubgraphEntity, Error> {
+    let version = subgraph_store.subgraph_version_from_deployment(&deployment_id)?;
+    subgraph_store.subgraph_from_version(&version)
 }
 
 fn remove_subgraph(

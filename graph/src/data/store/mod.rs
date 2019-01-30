@@ -7,7 +7,7 @@ use std::iter::FromIterator;
 use std::ops::{Deref, DerefMut};
 use std::str::FromStr;
 
-use data::subgraph::SubgraphDeploymentId;
+use data::subgraph::{SubgraphDeploymentId, SubgraphName};
 use graphql_parser::query;
 use graphql_parser::schema;
 use prelude::QueryExecutionError;
@@ -71,6 +71,7 @@ impl<'de> de::Deserialize<'de> for NodeId {
 #[serde(tag = "type")]
 pub enum AssignmentEvent {
     Add {
+        subgraph_name: SubgraphName,
         subgraph_id: SubgraphDeploymentId,
         node_id: NodeId,
     },
@@ -440,6 +441,71 @@ impl<'a> From<Vec<(&'a str, Value)>> for Entity {
 }
 
 pub trait TryFromEntity: Sized {
+    const ENTITY_TYPE: &'static str;
+
+    fn attribute_missing(attr: impl Into<String>) -> Error {
+        format_err!(
+            "{} attribute \"{}\" is missing",
+            Self::ENTITY_TYPE,
+            attr.into(),
+        )
+    }
+
+    fn attribute_invalid(
+        attr: impl Into<String>,
+        expected_type: impl Into<String>,
+        value: &Value,
+    ) -> Error {
+        format_err!(
+            "{} attribute \"{}\" is not a {}: {:?}",
+            Self::ENTITY_TYPE,
+            attr.into(),
+            expected_type.into(),
+            value
+        )
+    }
+
+    fn extract_optional<T, F>(
+        entity: &mut Entity,
+        name: impl Into<String>,
+        type_name: impl Into<String>,
+        f: F,
+    ) -> Result<Option<T>, Error>
+    where
+        F: FnOnce(Value) -> Option<T>,
+        T: Sized,
+    {
+        let name = name.into();
+        match entity.remove(&name) {
+            Some(value) => match f(value.clone()) {
+                Some(converted_value) => Ok(Some(converted_value)),
+                None => Err(Self::attribute_invalid(name, type_name, &value)),
+            },
+            None => Ok(None),
+        }
+    }
+
+    fn extract<T, F>(
+        entity: &mut Entity,
+        name: impl Into<String>,
+        type_name: impl Into<String>,
+        f: F,
+    ) -> Result<T, Error>
+    where
+        F: FnOnce(Value) -> Option<T>,
+        T: Sized,
+    {
+        let name = name.into();
+        let missing_name = name.clone();
+        entity
+            .remove(&name)
+            .ok_or_else(|| Self::attribute_missing(missing_name))
+            .and_then(|value| match f(value.clone()) {
+                Some(converted_value) => Ok(converted_value),
+                None => Err(Self::attribute_invalid(name, type_name, &value)),
+            })
+    }
+
     fn try_from_entity(entity: Entity) -> Result<Self, Error>;
 }
 
