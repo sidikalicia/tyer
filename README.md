@@ -35,10 +35,12 @@ For Ethereum network data, you can either run a local node or use Infura.io:
 This is a quick example to show a working Graph Node. It is a [subgraph for the Ethereum Name Service (ENS)](https://github.com/graphprotocol/ens-subgraph) that The Graph team built.
 
 1. Install IPFS and run `ipfs init` followed by `ipfs daemon`.
-2. Install PostgreSQL and run `initdb -D .postgres` followed by `pg_ctl -D .postgres -l logfile start` and `createdb graph-node`.
-3. If using Ubuntu, you may need to install additional packages:
+2. Install PostgreSQL
+3. Optional: If you would like to collect SQL statement execution statistics add 'pg_stat_statements' to `shared_preload_libraries` in your postgresql.conf file
+4. Startup PostgreSQL by running `initdb -D .postgres` followed by `pg_ctl -D .postgres -l logfile start` and `createdb graph-node`.
+5. If using Ubuntu, you may need to install additional packages:
    - `sudo apt-get install -y clang libpq-dev libssl-dev pkg-config`
-4. In the terminal, clone https://github.com/graphprotocol/ens-subgraph, and install dependencies and generate types for contract ABIs:
+6. In the terminal, clone https://github.com/graphprotocol/ens-subgraph, and install dependencies and generate types for contract ABIs:
 
 ```
 yarn install
