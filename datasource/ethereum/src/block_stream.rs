@@ -228,6 +228,9 @@ where
             .block_ptr(ctx.subgraph_id.clone())
             .unwrap();
 
+        dbg!(&head_ptr_opt);
+        dbg!(&subgraph_ptr);
+
         // If chain head ptr is not set yet
         if head_ptr_opt.is_none() {
             // Don't do any reconciliation until the chain store has more blocks

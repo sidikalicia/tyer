@@ -128,6 +128,8 @@ impl Store {
             schema_cache: Mutex::new(LruCache::with_capacity(100)),
         };
 
+        dbg!(&store.genesis_block_ptr);
+
         // Add network to store and check network identifiers
         store.add_network_if_missing(net_identifiers).unwrap();
 

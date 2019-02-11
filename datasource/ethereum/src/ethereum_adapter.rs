@@ -302,25 +302,28 @@ where
             .run(move || web3.net().version().map_err(SyncFailure::new).from_err());
 
         let web3 = self.web3.clone();
-        let gen_block_hash_future = retry("eth_getBlockByNumber(0, false) RPC call", &logger)
-            .no_limit()
-            .timeout_secs(30)
-            .run(move || {
-                web3.eth()
-                    .block(BlockNumber::Earliest.into())
-                    .map_err(SyncFailure::new)
-                    .from_err()
-                    .and_then(|gen_block_opt| {
-                        dbg!(&gen_block_opt);
-                        future::result(
-                            gen_block_opt
-                                .ok_or_else(|| {
-                                    format_err!("Ethereum node could not find genesis block")
-                                })
-                                .map(|gen_block| gen_block.hash.unwrap()),
-                        )
-                    })
-            });
+        let gen_block_hash_future = retry(
+            "eth_getBlockByNumber(\"earliest\", false) RPC call",
+            &logger,
+        )
+        .no_limit()
+        .timeout_secs(30)
+        .run(move || {
+            web3.eth()
+                .block(BlockNumber::Earliest.into())
+                .map_err(SyncFailure::new)
+                .from_err()
+                .and_then(|gen_block_opt| {
+                    dbg!(&gen_block_opt);
+                    future::result(
+                        gen_block_opt
+                            .ok_or_else(|| {
+                                format_err!("Ethereum node could not find genesis block")
+                            })
+                            .map(|gen_block| gen_block.hash.unwrap()),
+                    )
+                })
+        });
 
         Box::new(
             net_version_future
