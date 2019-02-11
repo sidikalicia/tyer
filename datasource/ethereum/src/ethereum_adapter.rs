@@ -311,6 +311,7 @@ where
                     .map_err(SyncFailure::new)
                     .from_err()
                     .and_then(|gen_block_opt| {
+                        dbg!(&gen_block_opt);
                         future::result(
                             gen_block_opt
                                 .ok_or_else(|| {

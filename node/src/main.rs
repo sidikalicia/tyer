@@ -369,6 +369,8 @@ fn async_main() -> impl Future<Item = (), Error = ()> + Send + 'static {
                 logger, "Connected to Ethereum";
                 "network" => &ethereum_network_name,
                 "node" => &ethereum_node_url,
+                "net_version" => &net.net_version,
+                "genesis_block_hash" => format!("{:?}", &net.genesis_block_hash),
             );
             net
         }

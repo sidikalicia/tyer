@@ -597,6 +597,7 @@ fn create_subgraph_version(
             None => 0,
         };
         let genesis_block_ptr = chain_store.genesis_block_ptr()?;
+        dbg!(&genesis_block_ptr);
         ops.extend(
             SubgraphDeploymentEntity::new(
                 &manifest,

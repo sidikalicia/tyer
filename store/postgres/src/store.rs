@@ -114,6 +114,8 @@ impl Store {
             .take_event_stream()
             .expect("Failed to listen to entity change events in Postgres");
 
+        dbg!(&net_identifiers.genesis_block_hash);
+
         // Create the store
         let mut store = Store {
             logger: logger.clone(),
