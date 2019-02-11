@@ -192,6 +192,8 @@ impl SubgraphDeploymentEntity {
         latest_ethereum_block: EthereumBlockPointer,
         total_ethereum_blocks_count: u64,
     ) -> Self {
+        dbg!(&latest_ethereum_block);
+        dbg!(&latest_ethereum_block.hash);
         Self {
             manifest: SubgraphManifestEntity::from(source_manifest),
             failed,
@@ -222,7 +224,7 @@ impl SubgraphDeploymentEntity {
         entity.set("synced", self.synced);
         entity.set(
             "latestEthereumBlockHash",
-            format!("{:x}", self.latest_ethereum_block_hash),
+            dbg!(format!("{:x}", self.latest_ethereum_block_hash)),
         );
         entity.set(
             "latestEthereumBlockNumber",
@@ -253,7 +255,7 @@ impl SubgraphDeploymentEntity {
 
         let mut entity = Entity::new();
         entity.set("id", id.to_string());
-        entity.set("latestEthereumBlockHash", block_ptr_to.hash_hex());
+        entity.set("latestEthereumBlockHash", dbg!(block_ptr_to.hash_hex()));
         entity.set("latestEthereumBlockNumber", block_ptr_to.number);
         ops.push(set_entity_operation(Self::TYPENAME, id.to_string(), entity));
 
