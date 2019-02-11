@@ -48,6 +48,9 @@ pub trait TypedEntity {
 
     fn key(entity_id: Self::IdType) -> EntityKey {
         let (subgraph_id, entity_type) = Self::subgraph_entity_pair();
+        dbg!(&subgraph_id);
+        dbg!(&entity_type);
+        dbg!(&entity_id.to_string());
         EntityKey {
             subgraph_id,
             entity_type,

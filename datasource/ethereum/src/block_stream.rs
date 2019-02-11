@@ -220,6 +220,7 @@ where
         let reorg_threshold = ctx.reorg_threshold;
 
         debug!(ctx.logger, "Identify next step");
+        dbg!(&ctx.subgraph_id);
 
         // Get pointers from database for comparison
         let head_ptr_opt = ctx.chain_store.chain_head_ptr().unwrap();

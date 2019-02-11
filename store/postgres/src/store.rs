@@ -674,6 +674,7 @@ impl StoreTrait for Store {
                     subgraph_id
                 )
             })?;
+        dbg!(&subgraph_entity);
 
         let hash = subgraph_entity
             .get("latestEthereumBlockHash")
@@ -685,6 +686,7 @@ impl StoreTrait for Store {
             })?
             .parse::<H256>()
             .map_err(|e| format_err!("latestEthereumBlockHash: {}", e))?;
+        dbg!(&hash);
 
         let number = subgraph_entity
             .get("latestEthereumBlockNumber")
