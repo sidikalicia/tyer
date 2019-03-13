@@ -568,6 +568,13 @@ impl<'a> From<&'a super::Mapping> for EthereumContractMappingEntity {
             file: mapping.link.link.clone(),
             entities: mapping.entities.clone(),
             abis: mapping.abis.iter().map(Into::into).collect(),
+            block_handler: mapping.block_handler.clone().into(),
+            transaction_handlers: mapping
+                .transaction_handlers
+                .clone()
+                .into_iter()
+                .map(Into::into)
+                .collect(),
             event_handlers: mapping
                 .event_handlers
                 .clone()
@@ -613,10 +620,37 @@ struct EthereumBlockHandlerEntity {
     handler: String,
 }
 
+impl TypedEntity for EthereumBlockHandlerEntity {
+    const TYPENAME: &'static str = "EthereumBlockHandlerEntity";
+    type IdType = String;
+}
+
+impl From<super::MappingBlockHandler> for EthereumBlockHandlerEntity {
+    fn from(block_handler: super::MappingBlockHandler) -> Self {
+        Self {
+            handler: block_handler.handler,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct EthereumTransactionHandlerEntity {
     function: String,
     handler: String,
+}
+
+impl TypedEntity for EthereumTransactionHandlerEntity {
+    const TYPENAME: &'static str = "EthereumTransactionHandlerEntity";
+    type IdType = String;
+}
+
+impl From<super::MappingTransactionHandler> for EthereumTransactionHandlerEntity {
+    fn from(transaction_handler: super::MappingTransactionHandler) -> Self {
+        Self {
+            function: transaction_handler.function,
+            handler: transaction_handler.handler,
+        }
+    }
 }
 
 #[derive(Debug)]
