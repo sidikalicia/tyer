@@ -74,11 +74,11 @@ type EthereumContractAbi @entity {
     file: String!
 }
 
-type EthereumBlockHandler {
+type EthereumBlockHandler @entity {
     handler: String!
 }
 
-type EthereumTransactionHandler {
+type EthereumTransactionHandler @entity {
     function: String!
     handler: String!
 }
