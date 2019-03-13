@@ -510,6 +510,8 @@ struct EthereumContractMappingEntity {
     file: String,
     entities: Vec<String>,
     abis: Vec<EthereumContractAbiEntity>,
+    block_handler: EthereumBlockHandlerEntity,
+    transaction_handlers: Vec<EthereumTransactionHandlerEntity>,
     event_handlers: Vec<EthereumContractEventHandlerEntity>,
 }
 
@@ -604,6 +606,17 @@ impl<'a> From<&'a super::MappingABI> for EthereumContractAbiEntity {
             file: abi.link.link.clone(),
         }
     }
+}
+
+#[derive(Debug)]
+struct EthereumBlockHandlerEntity {
+    handler: String,
+}
+
+#[derive(Debug)]
+struct EthereumTransactionHandlerEntity {
+    function: String,
+    handler: String,
 }
 
 #[derive(Debug)]

@@ -63,13 +63,24 @@ type EthereumContractMapping @entity {
     file: String!
     entities: [String!]!
     abis: [EthereumContractAbi!]!
-    eventHandlers: [EthereumContractEventHandler!]!
+    blockHandler: EthereumBlockHandler
+    transactionHandlers: [EthereumTransactionHandler!]
+    eventHandlers: [EthereumContractEventHandler!]
 }
 
 type EthereumContractAbi @entity {
     id: ID!
     name: String!
     file: String!
+}
+
+type EthereumBlockHandler {
+    handler: String!
+}
+
+type EthereumTransactionHandler {
+    function: String!
+    handler: String!
 }
 
 type EthereumContractEventHandler @entity {
