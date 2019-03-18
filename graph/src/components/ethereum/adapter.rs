@@ -130,6 +130,16 @@ impl FromIterator<(Address, H256)> for EthereumLogFilter {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct EthereumTransactionFilter {
+    pub contract_address_function_signature_pair: HashSet<(Address, String)>,
+}
+
+#[derive(Clone, Debug)]
+pub struct EthereumBlockFilter {
+    pub contrac_addresses: HashSet<Address>,
+}
+
 /// Common trait for components that watch and manage access to Ethereum.
 ///
 /// Implementations may be implemented against an in-process Ethereum node
@@ -225,7 +235,7 @@ pub trait EthereumAdapter: Send + Sync + 'static {
 
     fn find_first_blocks_with_transactions(
         &self,
-        logger: &logger,
+        logger: &Logger,
         from: u64,
         to: u64,
         addresses: EthereumTransactionFilter,

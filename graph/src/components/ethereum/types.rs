@@ -51,7 +51,8 @@ impl Default for EthereumBlock {
     }
 }
 
-enum EthereumTrigger {
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum EthereumTrigger {
     Block,
     Transaction,
     Event,

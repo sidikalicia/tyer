@@ -557,10 +557,10 @@ where
         from: u64,
         to: u64,
         log_filter: Option<EthereumLogFilter>,
-        tx_filter: Option<EtherumTransactionFilter>,
+        tx_filter: Option<EthereumTransactionFilter>,
         block_filter: Option<EthereumBlockFilter>,
     ) -> Box<Future<Item = Vec<EthereumBlockPointer>, Error = Error> + Send> {
-        
+        unimplemented!();
     }
 
     fn find_first_blocks_with_logs(
@@ -608,12 +608,12 @@ where
 
     fn find_first_blocks_with_transactions(
         &self,
-        logger: &logger,
+        logger: &Logger,
         from: u64,
         to: u64,
-        tx_filter: Vec<Address>,
+        tx_filter: EthereumTransactionFilter,
     ) -> Box<Future<Item = Vec<EthereumBlockPointer>, Error = Error> + Send> {
-        let fut = self.
+        unimplemented!();
     }
 
     fn contract_call(
