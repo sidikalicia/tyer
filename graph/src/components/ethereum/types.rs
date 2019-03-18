@@ -2,6 +2,12 @@ use ethabi::LogParam;
 use web3::types::*;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct EthereumBlockWithTriggers {
+    pub ethereum_block: Block<Transaction>,
+    pub triggers: Vec<EthereumTrigger>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct EthereumBlock {
     pub block: Block<Transaction>,
     pub transaction_receipts: Vec<TransactionReceipt>,
@@ -43,6 +49,12 @@ impl Default for EthereumBlock {
             transaction_receipts: vec![],
         }
     }
+}
+
+enum EthereumTrigger {
+    Block,
+    Transaction,
+    Event,
 }
 
 /// Ethereum block data.

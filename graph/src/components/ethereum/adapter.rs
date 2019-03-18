@@ -193,6 +193,16 @@ pub trait EthereumAdapter: Send + Sync + 'static {
         block_ptr: EthereumBlockPointer,
     ) -> Box<Future<Item = bool, Error = Error> + Send>;
 
+    fn find_first_blocks_with_triggers(
+        &self,
+        logger: &Logger,
+        from: u64,
+        to: u64,
+        log_filter: Option<EthereumLogFilter>,
+        tx_filter: Option<EthereumTransactionFilter>,
+        block_filter: Option<EthereumBlockFilter>,
+    ) -> Box<Future<Item = Vec<EthereumBlockPointer>, Error = Error> + Send>;
+
     /// Find the first few blocks in the specified range containing at least one transaction with
     /// at least one log entry matching the specified `log_filter`.
     ///
@@ -213,10 +223,19 @@ pub trait EthereumAdapter: Send + Sync + 'static {
         log_filter: EthereumLogFilter,
     ) -> Box<Future<Item = Vec<EthereumBlockPointer>, Error = Error> + Send>;
 
+    fn find_first_blocks_with_transactions(
+        &self,
+        logger: &logger,
+        from: u64,
+        to: u64,
+        addresses: EthereumTransactionFilter,
+    ) -> Box<Future<Item = Vec<EthereumBlockPointer>, Error = Error> + Send>;
+
     /// Call the function of a smart contract.
     fn contract_call(
         &self,
         logger: &Logger,
         call: EthereumContractCall,
     ) -> Box<Future<Item = Vec<Token>, Error = EthereumContractCallError> + Send>;
+
 }

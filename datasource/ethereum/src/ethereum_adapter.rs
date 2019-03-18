@@ -551,6 +551,18 @@ where
         )
     }
 
+    fn find_first_blocks_with_triggers(
+        &self,
+        logger: &Logger,
+        from: u64,
+        to: u64,
+        log_filter: Option<EthereumLogFilter>,
+        tx_filter: Option<EtherumTransactionFilter>,
+        block_filter: Option<EthereumBlockFilter>,
+    ) -> Box<Future<Item = Vec<EthereumBlockPointer>, Error = Error> + Send> {
+        
+    }
+
     fn find_first_blocks_with_logs(
         &self,
         logger: &Logger,
@@ -592,6 +604,16 @@ where
                     _ => unreachable!(),
                 }),
         )
+    }
+
+    fn find_first_blocks_with_transactions(
+        &self,
+        logger: &logger,
+        from: u64,
+        to: u64,
+        tx_filter: Vec<Address>,
+    ) -> Box<Future<Item = Vec<EthereumBlockPointer>, Error = Error> + Send> {
+        let fut = self.
     }
 
     fn contract_call(
