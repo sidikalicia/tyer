@@ -93,6 +93,80 @@ where
             })
     }
 
+    fn log_stream_v2(
+        self,
+        logger: &Logger,
+        from: u64,
+        to: u64,
+        log_filter: EthereumLogFilter,
+    ) -> impl Stream<Item = Vec<Log>, Error = Error> + Send {
+        if from > to {
+            panic!(
+                "Can not produce a log stream on a backwards block range: from = {}, to = {}",
+                from, to,
+            );
+        }
+
+        let event_sigs = log_filter
+            .contract_address_and_event_sig_pairs
+            .iter()
+            .map(|(_addr, sig)| *sig)
+            .collect::<HashSet<H256>>()
+            .into_iter()
+            .collect::<Vec<H256>>();
+        let addresses = log_filter
+            .contract_address_and_event_sig_pairs
+            .iter()
+            .map(|(addr, _sig)| *addr)
+            .collect::<HashSet<H160>>()
+            .into_iter()
+            .collect::<Vec<H160>>();
+        let eth = self.clone();
+        let logger = logger.to_owned();
+
+        stream::unfold(from, move |start| {
+            if start > to {
+                return None
+            }
+            
+            let end = if start < *LOG_STREAM_FAST_SCAN_END {
+                (start + 100_000 - 1)
+                    .min(to)
+                    .min(*LOG_STREAM_FAST_SCAN_END)
+            } else {
+                (start + 10_000 - 1)
+                    .min(to)
+            };
+            let new_start = end + 1;
+            
+            debug!(
+                logger,
+                "Starting request for logs in block range: [{}, {}]",
+                start,
+                end
+            );
+            
+            let log_filter = log_filter.clone();
+            let query = eth
+                .logs_with_sigs(
+                    &logger,
+                    start,
+                    end,
+                    addresses.clone(),
+                    event_sigs.clone(),
+                )
+                .map(move |logs| {
+                    logs.into_iter()
+                        .filter(move |log| log_filter.matches(log))
+                        .collect()
+                })
+                .map(move |logs| {
+                    (logs, new_start)
+                });
+            Some(query)
+        })
+    }
+
     fn log_stream(
         &self,
         logger: &Logger,
@@ -560,6 +634,21 @@ where
         tx_filter: Option<EthereumTransactionFilter>,
         block_filter: Option<EthereumBlockFilter>,
     ) -> Box<Future<Item = Vec<EthereumBlockPointer>, Error = Error> + Send> {
+        // `N` is the maximum number of blocks we want the future to yield.
+        //
+        // If a block filter is provided but the contract set within it is emptythen
+        // just return the next `N` blocks forward from `from`.
+        //
+        // If no filters are provided, return an empty vector of blocks.
+        //
+        // Each trigger filter needs to be queried for the same block range
+        // and the blocks yielded need to be deduped. If any error occurs while searching for a trigger type, the
+        // entire operation fails.
+        //
+        // What should `N` be?
+        // Well, what is `N` right now? It is 100_000 if it is before block 300_000 and 50_000 broken up into
+        // 5 chunks if past block 300_000
+        // 
         unimplemented!();
     }
 
