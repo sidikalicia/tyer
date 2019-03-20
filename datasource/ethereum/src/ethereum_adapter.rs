@@ -4,6 +4,7 @@ use graph::ethabi::Token;
 use lazy_static::lazy_static;
 use std::collections::HashSet;
 use std::sync::Arc;
+use tiny_keccak::{keccak256};
 
 use graph::components::ethereum::{EthereumAdapter as EthereumAdapterTrait, *};
 use graph::prelude::*;
@@ -41,6 +42,58 @@ where
         EthereumAdapter {
             web3: Arc::new(Web3::new(transport)),
         }
+    }
+
+    fn calls(
+        &self,
+        logger: &Logger,
+        from: u64,
+        to: u64,
+        addresses: Vec<H160>,
+    ) -> impl Future<Item = Vec<EthereumCall>, Error = Error> {
+        let eth = self.clone();
+        let logger = logger.to_owned();
+
+        retry("trace_filter RPC call", &logger)
+            .no_limit()
+            .timeout_secs(60)
+            .run(move || {
+                let trace_filter: TraceFilter = TraceFilterBuilder::default()
+                    .from_block(from.into())
+                    .to_block(to.into())
+                    .to_address(addresses.clone())
+                    .build();
+
+                let logger = logger.clone();
+                eth
+                    .web3
+                    .trace()
+                    .filter(trace_filter)
+                    .map(move |traces| {
+                        debug!(logger, "Received traces for block range [{}, {}]", from, to);
+                        // Transform traces into calls
+                        traces
+                            .iter()
+                            .filter(|trace| match trace.action {
+                                Action::Call(_) => true,
+                                _ => false,
+                            })
+                            .map(EthereumCall::from)
+                            .collect()
+                    })
+                    .map_err(SyncFailure::new)
+                    .from_err()
+            })
+            .map_err(move |e| {
+                e.into_inner().unwrap_or_else(move || {
+                    format_err!(
+                        "Ethereum node took too long to respond to trace_filter \
+                         (from block {}, to block {})",
+                        from,
+                        to
+                    )
+                })
+            })
     }
 
     fn logs_with_sigs(
@@ -91,6 +144,84 @@ where
                     )
                 })
             })
+    }
+
+    fn call_stream(
+        self,
+        logger: &Logger,
+        from: u64,
+        to: u64,
+        addresses: Vec<H160>,
+        function_signatures: Option<Vec<String>>,
+    ) -> impl Stream<Item = Vec<EthereumCall>, Error = Error> + Send {
+        if from > to {
+            panic!(
+                "Can not produce a call stream on a backwards block range: from = {}, to = {}",
+                from, to,
+            );
+        }
+        
+        let eth = self.clone();
+        let logger = logger.to_owned();
+
+        stream::unfold(from, move |start| {
+            if start > to {
+                return None
+            }
+
+            let end = (start + 10_000 - 1)
+                .min(to);
+            let new_start = end + 1;
+
+            debug!(
+                logger,
+                "Starting request for method calls in block range: [{}, {}]",
+                start,
+                end
+            );
+
+            let function_signature_hash_prefixes = function_signatures.clone().map(|signatures| {
+                signatures
+                    .iter()
+                    .map(|signature| {
+                        let sh = keccak256(signature.as_bytes());
+                        [sh[0], sh[1], sh[2], sh[3]]
+                    })
+                    .collect::<HashSet<[u8; 4]>>()
+            });
+
+            let query = eth.
+                calls(
+                    &logger,
+                    start,
+                    end,
+                    addresses.clone(),
+                )
+                .map(move |calls| {
+                    calls
+                        .iter()
+                        .filter(|call| {
+                            if function_signature_hash_prefixes.is_none() {
+                                // Keep all calls if no function filters were provided                                 
+                                return true
+                            }
+                            let input = &call.input.0;
+                            if input.len() < 4 {
+                                return false
+                            }
+                            function_signature_hash_prefixes
+                                .clone()
+                                .unwrap()
+                                .contains(&input[..4])
+                        })
+                        .map(|call| call.clone())
+                        .collect()
+                })
+                .map(move |calls| {
+                    (calls, new_start)
+                });
+            Some(query)
+        })
     }
 
     fn log_stream_v2(

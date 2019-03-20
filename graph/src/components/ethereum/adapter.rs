@@ -137,7 +137,7 @@ pub struct EthereumTransactionFilter {
 
 #[derive(Clone, Debug)]
 pub struct EthereumBlockFilter {
-    pub contrac_addresses: HashSet<Address>,
+    pub contract_addresses: HashSet<Address>,
 }
 
 /// Common trait for components that watch and manage access to Ethereum.
