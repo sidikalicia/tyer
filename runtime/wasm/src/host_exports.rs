@@ -549,6 +549,11 @@ where
         BigDecimal::from_str(&s)
             .map_err(|e| HostExportError(format!("failed to parse BigDecimal: {}", e)))
     }
+
+    pub(crate) fn data_source_create(&self, name: String, params: Vec<String>) -> bool {
+        println!("CREATE DATA SOURCE: {} {:?}", name, params);
+        true
+    }
 }
 
 pub(crate) fn string_to_h160(string: &str) -> Result<H160, HostExportError<impl ExportError>> {

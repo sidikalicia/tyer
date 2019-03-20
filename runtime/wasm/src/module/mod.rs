@@ -61,6 +61,7 @@ const BIG_DECIMAL_EQUALS: usize = 31;
 const BIG_DECIMAL_TO_STRING: usize = 32;
 const BIG_DECIMAL_FROM_STRING: usize = 33;
 const IPFS_MAP_FUNC_INDEX: usize = 34;
+const DATA_SOURCE_CREATE_INDEX: usize = 35;
 
 pub struct WasmiModuleConfig<T, L, S> {
     pub subgraph_id: SubgraphDeploymentId,
@@ -703,6 +704,7 @@ where
         Ok(Some(RuntimeValue::from(result_ptr)))
     }
 
+    /// function typeConversion.bytesToBase58(bytes: Bytes): string
     fn bytes_to_base58(
         &mut self,
         bytes_ptr: AscPtr<Uint8Array>,
@@ -793,6 +795,20 @@ where
             .big_decimal_equals(self.asc_get(x_ptr), self.asc_get(y_ptr));
         Ok(Some(RuntimeValue::I32(if equals { 1 } else { 0 })))
     }
+
+    /// function dataSource.create(name: string, params: Array<string>): void
+    fn data_source_create(
+        &mut self,
+        name_ptr: AscPtr<AscString>,
+        params_ptr: AscPtr<Array<AscPtr<AscString>>>,
+    ) -> Result<Option<RuntimeValue>, Trap> {
+        let name: String = self.asc_get(name_ptr);
+        let params: Vec<String> = self.asc_get(params_ptr);
+        let result = self
+            .host_exports
+            .data_source_create(self.asc_get(name_ptr), self.asc_get(params_ptr));
+        Ok(Some(RuntimeValue::from(result as u32)))
+    }
 }
 
 impl<T, L, S, U> Externals for WasmiModule<T, L, S, U>
@@ -871,6 +887,9 @@ where
                 args.nth_checked(2)?,
                 args.nth_checked(3)?,
             ),
+            DATA_SOURCE_CREATE_INDEX => {
+                self.data_source_create(args.nth_checked(0)?, args.nth_checked(1)?)
+            }
             _ => panic!("Unimplemented function at {}", index),
         }
     }
@@ -967,6 +986,10 @@ impl ModuleImportResolver for ModuleResolver {
             "bigDecimal.toString" => FuncInstance::alloc_host(signature, BIG_DECIMAL_TO_STRING),
             "bigDecimal.fromString" => FuncInstance::alloc_host(signature, BIG_DECIMAL_FROM_STRING),
 
+            // dataSource
+            "dataSource.create" => FuncInstance::alloc_host(signature, DATA_SOURCE_CREATE_INDEX),
+
+            // Unknown export
             _ => {
                 return Err(Error::Instantiation(format!(
                     "Export '{}' not found",
