@@ -94,7 +94,8 @@ where
     ) -> Result<Self, FailureError> {
         let logger = logger.new(o!("component" => "WasmiModule"));
 
-        let parsed_module = config.data_source.mapping.runtime;
+        // FIXME: Cloning this may be expensive.
+        let parsed_module = config.data_source.mapping.runtime.clone();
 
         // Inject metering calls, which are used for checking timeouts.
         let parsed_module = pwasm_utils::inject_gas_counter(parsed_module, &Default::default())
@@ -120,7 +121,7 @@ where
             _ => return Err(err_msg("WASM module has multiple import sections")),
         };
 
-        let name = config.data_source.name;
+        let name = config.data_source.name.clone();
         let module = Module::from_parity_wasm_module(parsed_module)
             .map_err(|e| format_err!("Invalid module of data source `{}`: {}", name, e))?;
 
@@ -128,7 +129,7 @@ where
         let host_exports = HostExports::new(
             config.subgraph_id,
             Version::parse(&config.data_source.mapping.api_version)?,
-            config.data_source.mapping.abis,
+            config.data_source,
             config.ethereum_adapter.clone(),
             config.link_resolver.clone(),
             config.store.clone(),
@@ -806,7 +807,7 @@ where
         let params: Vec<String> = self.asc_get(params_ptr);
         let result = self
             .host_exports
-            .data_source_create(self.asc_get(name_ptr), self.asc_get(params_ptr));
+            .data_source_create(self.asc_get(name_ptr), self.asc_get(params_ptr))?;
         Ok(Some(RuntimeValue::from(result as u32)))
     }
 }
