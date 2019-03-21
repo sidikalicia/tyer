@@ -555,6 +555,7 @@ where
 
     pub(crate) fn data_source_create(
         &self,
+        ctx: &mut EventHandlerContext,
         name: String,
         params: Vec<String>,
     ) -> Result<bool, HostExportError<impl ExportError>> {
@@ -588,16 +589,14 @@ where
                         .collect::<Vec<_>>()
                         .join(", ")
                 ))
-            });
+            })?;
 
-        println!("CREATE DATA SOURCE FROM TEMPLATE: {:?}", template);
-
-        // TODO:
-        //
-        // 1. Create entity operations and add them to the `ctx.entity_operations`
-        // 2. Add `ctx.new_data_sources` and add enough information for that to it
-        //    so we can later create the data source for real
-        // 3. Return
+        // Remember that we need to create this data source
+        ctx.state.created_data_sources.push(DataSourceTemplateInfo {
+            data_source: self.data_source.name.clone(),
+            template: name,
+            params,
+        });
 
         Ok(true)
     }

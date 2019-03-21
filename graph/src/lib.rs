@@ -78,8 +78,9 @@ pub mod prelude {
         TransactionAbortError, SUBSCRIPTION_THROTTLE_INTERVAL,
     };
     pub use crate::components::subgraph::{
-        ProcessingState, RuntimeHost, RuntimeHostBuilder, SubgraphAssignmentProvider,
-        SubgraphInstance, SubgraphInstanceManager, SubgraphRegistrar, SubgraphVersionSwitchingMode,
+        DataSourceTemplateInfo, ProcessingState, RuntimeHost, RuntimeHostBuilder,
+        SubgraphAssignmentProvider, SubgraphInstance, SubgraphInstanceManager, SubgraphRegistrar,
+        SubgraphVersionSwitchingMode,
     };
     pub use crate::components::{EventConsumer, EventProducer};
 
@@ -95,9 +96,10 @@ pub mod prelude {
     };
     pub use crate::data::subgraph::schema::{SubgraphDeploymentEntity, TypedEntity};
     pub use crate::data::subgraph::{
-        CreateSubgraphResult, DataSource, Link, MappingABI, MappingEventHandler,
-        SubgraphAssignmentProviderError, SubgraphAssignmentProviderEvent, SubgraphDeploymentId,
-        SubgraphManifest, SubgraphManifestResolveError, SubgraphName, SubgraphRegistrarError,
+        CreateSubgraphResult, DataSource, DataSourceTemplate, Link, MappingABI,
+        MappingEventHandler, SubgraphAssignmentProviderError, SubgraphAssignmentProviderEvent,
+        SubgraphDeploymentId, SubgraphManifest, SubgraphManifestResolveError, SubgraphName,
+        SubgraphRegistrarError,
     };
     pub use crate::data::subscription::{
         QueryResultStream, Subscription, SubscriptionError, SubscriptionResult,

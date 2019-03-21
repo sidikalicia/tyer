@@ -396,6 +396,22 @@ pub struct Mapping {
     pub link: Link,
 }
 
+impl Mapping {
+    /// Clones a mapping, making it very obvious that this is an expensive operation.
+    fn expensive_clone(&self) -> Self {
+        Mapping {
+            kind: self.kind.clone(),
+            api_version: self.api_version.clone(),
+            language: self.language.clone(),
+            entities: self.entities.clone(),
+            abis: self.abis.clone(),
+            event_handlers: self.event_handlers.clone(),
+            runtime: self.runtime.clone(),
+            link: self.link.clone(),
+        }
+    }
+}
+
 impl UnresolvedMapping {
     pub fn resolve(
         self,
@@ -483,6 +499,44 @@ impl UnresolvedDataSource {
     }
 }
 
+impl DataSource {
+    pub fn try_from_template(
+        template: &DataSourceTemplate,
+        params: &Vec<String>,
+    ) -> Result<Self, failure::Error> {
+        // Obtain the address from the parameters
+        let string = params
+            .get(0)
+            .ok_or_else(|| {
+                format_err!(
+                    "Failed to create data source from template `{}`: address parameter is missing",
+                    template.name
+                )
+            })?
+            .trim_start_matches("0x");
+
+        let address = Address::from_str(string).map_err(|e| {
+            format_err!(
+                "Failed to create data source from template `{}`: invalid address provided: {}",
+                template.name,
+                e
+            )
+        })?;
+
+        Ok(DataSource {
+            kind: template.kind.clone(),
+            network: template.network.clone(),
+            name: template.name.clone(),
+            source: Source {
+                address,
+                abi: template.source.abi.clone(),
+            },
+            mapping: template.mapping.expensive_clone(),
+            templates: None,
+        })
+    }
+}
+
 #[derive(Clone, Debug, Hash, Eq, PartialEq, Deserialize)]
 pub struct BaseDataSourceTemplate<M> {
     pub kind: String,
@@ -514,6 +568,19 @@ impl UnresolvedDataSourceTemplate {
             source,
             mapping,
         })
+    }
+}
+
+impl DataSourceTemplate {
+    /// Clones a template, making it very obvious that this is an expensive operation.
+    pub fn expensive_clone(&self) -> Self {
+        DataSourceTemplate {
+            kind: self.kind.clone(),
+            network: self.network.clone(),
+            name: self.name.clone(),
+            source: self.source.clone(),
+            mapping: self.mapping.expensive_clone(),
+        }
     }
 }
 

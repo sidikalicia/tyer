@@ -137,6 +137,27 @@ impl SubgraphInstanceManager {
         let store_for_events = store.clone();
         let store_for_errors = store.clone();
 
+        // Create copies of the data source templates; this creates a vector of
+        // the form
+        // ```
+        // vec![
+        //   ("DataSource1", "Template1", <template struct>),
+        //   ("DataSource2", "Template1", <template struct>),
+        //   ("DataSource2", "Template2", <template struct>),
+        // ]
+        // ```
+        // for easy filtering later
+        let mut templates: Vec<(String, DataSourceTemplate)> = vec![];
+        for data_source in manifest.data_sources.iter() {
+            for template in data_source.templates.iter().flatten() {
+                templates.push((data_source.name.clone(), template.expensive_clone()));
+            }
+        }
+        let templates = Arc::new(templates);
+
+        // TODO: Restore dynamic data sources
+        let dynamic_data_sources = Arc::new(RwLock::new(vec![]));
+
         // Request a block stream for this subgraph
         let block_stream_canceler = CancelGuard::new();
         let block_stream_cancel_handle = block_stream_canceler.handle();
@@ -175,6 +196,8 @@ impl SubgraphInstanceManager {
                         "block_number" => format!("{:?}", block.block.number.unwrap()),
                         "block_hash" => format!("{:?}", block.block.hash.unwrap())
                     ));
+                    let templates = templates.clone();
+                    let dynamic_data_sources = dynamic_data_sources.clone();
 
                     // Extract logs relevant to the subgraph
                     let logs: Vec<_> = block
@@ -206,6 +229,7 @@ impl SubgraphInstanceManager {
                     let logger_for_transact = logger_for_process.clone();
                     let initial_state = ProcessingState::default();
                     stream::iter_ok::<_, CancelableError<Error>>(logs)
+                        // Process events from the block stream
                         .fold(initial_state, move |state, log| {
                             let logger = logger_for_process.clone();
                             let instance = instance.clone();
@@ -222,6 +246,62 @@ impl SubgraphInstanceManager {
                                     .map_err(|e| format_err!("Failed to process event: {}", e))
                             })
                         })
+                        // Create dynamic data sources and process their events as well
+                        .and_then(move |state| {
+                            // Create data source instances from templates
+                            let data_sources = state.created_data_sources.iter().try_fold(
+                                vec![],
+                                move |mut data_sources, info| {
+                                    let template = &templates
+                                        .iter()
+                                        .find(|(data_source_name, template)| {
+                                            data_source_name == &info.data_source
+                                                && template.name == info.template
+                                        })
+                                        .ok_or_else(|| {
+                                            format_err!(
+                                                "Failed to create data source with name `{}`. \
+                                                 No template with this name in parent data \
+                                                 source `{}`.",
+                                                info.template,
+                                                info.data_source
+                                            )
+                                        })?
+                                        .1;
+
+                                    let data_source =
+                                        DataSource::try_from_template(&template, &info.params)?;
+                                    data_sources.push(data_source);
+                                    Ok(data_sources)
+                                },
+                            );
+
+                            // Fail early if any of the data sources couln't be created (e.g.
+                            // due to parameters missing)
+                            let data_sources = match data_sources {
+                                Ok(data_sources) => data_sources,
+                                Err(e) => return future::err(e),
+                            };
+
+                            // TODO: Ask the block stream for events for the new data sources
+                            // that come from the same block; then process these events
+
+                            // Update the block stream so it includes events from these
+                            // data sources going forward
+
+                            // Track the new data sources
+                            let mut dynamic_data_sources = dynamic_data_sources.write().unwrap();
+                            dynamic_data_sources.extend(data_sources);
+
+                            // TODO
+                            // For each new data source:
+                            // 2. Request and process events for the current block
+                            // 3. Update block stream going forward
+                            // 4. Create entity operations for the new data source
+
+                            future::ok(state)
+                        })
+                        // Apply entity operations and advance the stream
                         .and_then(move |state| {
                             let block = block_for_transact.clone();
                             let logger = logger_for_transact.clone();

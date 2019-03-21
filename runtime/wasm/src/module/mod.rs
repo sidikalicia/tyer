@@ -807,7 +807,7 @@ where
         let params: Vec<String> = self.asc_get(params_ptr);
         let result = self
             .host_exports
-            .data_source_create(self.asc_get(name_ptr), self.asc_get(params_ptr))?;
+            .data_source_create(&mut self.ctx, name, params)?;
         Ok(Some(RuntimeValue::from(result as u32)))
     }
 }
