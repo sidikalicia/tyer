@@ -189,7 +189,6 @@ where
                     })
                     .collect::<HashSet<[u8; 4]>>()
             });
-
             let query = eth.
                 calls(
                     &logger,
@@ -224,8 +223,8 @@ where
         })
     }
 
-    fn log_stream_v2(
-        self,
+    fn log_stream(
+        &self,
         logger: &Logger,
         from: u64,
         to: u64,
@@ -296,139 +295,6 @@ where
                 });
             Some(query)
         })
-    }
-
-    fn log_stream(
-        &self,
-        logger: &Logger,
-        from: u64,
-        to: u64,
-        log_filter: EthereumLogFilter,
-    ) -> impl Stream<Item = Vec<Log>, Error = Error> + Send {
-        if from > to {
-            panic!(
-                "cannot produce a log stream on a backwards block range (from={}, to={})",
-                from, to
-            );
-        }
-
-        // Collect all event sigs
-        let event_sigs = log_filter
-            .contract_address_and_event_sig_pairs
-            .iter()
-            .map(|(_addr, sig)| *sig)
-            .collect::<HashSet<H256>>()
-            .into_iter()
-            .collect::<Vec<H256>>();
-
-        // Collect all contract addresses
-        let addresses = log_filter
-            .contract_address_and_event_sig_pairs
-            .iter()
-            .map(|(addr, _sig)| *addr)
-            .collect::<HashSet<H160>>()
-            .into_iter()
-            .collect::<Vec<H160>>();
-
-        let eth_adapter = self.clone();
-        let logger = logger.to_owned();
-        stream::unfold(from, move |mut chunk_offset| {
-            if chunk_offset <= to {
-                let mut chunk_futures = vec![];
-
-                if chunk_offset < *LOG_STREAM_FAST_SCAN_END {
-                    let chunk_end = (chunk_offset + 100_000 - 1)
-                        .min(to)
-                        .min(*LOG_STREAM_FAST_SCAN_END);
-
-                    debug!(
-                        logger,
-                        "Starting request for logs in block range [{},{}]", chunk_offset, chunk_end
-                    );
-                    let log_filter = log_filter.clone();
-                    let chunk_future = eth_adapter
-                        .logs_with_sigs(
-                            &logger,
-                            chunk_offset,
-                            chunk_end,
-                            addresses.clone(),
-                            event_sigs.clone(),
-                        )
-                        .map(move |logs| {
-                            logs.into_iter()
-                                // Filter out false positives
-                                .filter(move |log| log_filter.matches(log))
-                                .collect()
-                        });
-                    chunk_futures
-                        .push(Box::new(chunk_future)
-                            as Box<Future<Item = Vec<Log>, Error = _> + Send>);
-
-                    chunk_offset = chunk_end + 1;
-                } else {
-                    for _ in 0..LOG_STREAM_PARALLEL_CHUNKS {
-                        // Last chunk may be shorter than CHUNK_SIZE, so needs special handling
-                        let is_last_chunk = (chunk_offset + LOG_STREAM_CHUNK_SIZE_IN_BLOCKS) > to;
-
-                        // Determine the upper bound on the chunk
-                        // Note: chunk_end is inclusive
-                        let chunk_end = if is_last_chunk {
-                            to
-                        } else {
-                            // Subtract 1 to make range inclusive
-                            chunk_offset + LOG_STREAM_CHUNK_SIZE_IN_BLOCKS - 1
-                        };
-
-                        // Start request for this chunk of logs
-                        // Note: this function filters only on event sigs,
-                        // and will therefore return false positives
-                        debug!(
-                            logger,
-                            "Starting request for logs in block range [{},{}]",
-                            chunk_offset,
-                            chunk_end
-                        );
-                        let log_filter = log_filter.clone();
-                        let chunk_future = eth_adapter
-                            .logs_with_sigs(
-                                &logger,
-                                chunk_offset,
-                                chunk_end,
-                                addresses.clone(),
-                                event_sigs.clone(),
-                            )
-                            .map(move |logs| {
-                                logs.into_iter()
-                                    // Filter out false positives
-                                    .filter(move |log| log_filter.matches(log))
-                                    .collect()
-                            });
-
-                        // Save future for later
-                        chunk_futures.push(Box::new(chunk_future)
-                            as Box<Future<Item = Vec<Log>, Error = _> + Send>);
-
-                        // If last chunk, will push offset past `to`. That's fine.
-                        chunk_offset += LOG_STREAM_CHUNK_SIZE_IN_BLOCKS;
-
-                        if is_last_chunk {
-                            break;
-                        }
-                    }
-                }
-
-                // Combine chunk futures into one future (Vec<Log>, u64)
-                Some(stream::futures_ordered(chunk_futures).collect().map(
-                    move |chunks: Vec<Vec<Log>>| {
-                        let flattened = chunks.into_iter().flat_map(|v| v).collect::<Vec<Log>>();
-                        (flattened, chunk_offset)
-                    },
-                ))
-            } else {
-                None
-            }
-        })
-        .filter(|chunk| !chunk.is_empty())
     }
 
     fn call(
@@ -710,6 +576,35 @@ where
         )
     }
 
+    fn block_parent_hash_by_block_hash(
+        &self,
+        logger: &Logger,
+        descendant_block_hash: H256,
+    ) -> Box<Future<Item = Option<H256>, Error = Error> + Send> {
+        let web3 = self.web3.clone();
+
+        Box::new(
+            retry("eth_getBlockByHash", &logger)
+                .no_limit()
+                .timeout_secs(60)
+                .run(move || {
+                    web3.eth()
+                        .block(BlockId::Hash(descendant_block_hash))
+                        .map_err(SyncFailure::new)
+                        .from_err()
+                        .map(|block_opt| block_opt.map(|block| block.parent_hash))
+                })
+                .map_err(move |e| {
+                    e.into_inner().unwrap_or_else(move || {
+                        format_err!(
+                            "Ethereum node took too long to return data for block hash = {}",
+                            descendant_block_hash
+                        )
+                    })
+                }),
+        )
+    }
+
     fn block_hash_by_block_number(
         &self,
         logger: &Logger,
@@ -776,11 +671,58 @@ where
         // and the blocks yielded need to be deduped. If any error occurs while searching for a trigger type, the
         // entire operation fails.
         //
-        // What should `N` be?
-        // Well, what is `N` right now? It is 100_000 if it is before block 300_000 and 50_000 broken up into
-        // 5 chunks if past block 300_000
-        // 
+
+        // Decide on range for block search
+        // Create log_filter future, map results to `EthereumBlockPointer`s
+        // Create transaction_filter future, map results to `EthereumBlockPointer`s
+        // Create block_filter future, map results to `EthereumBlockPointer`s
+        // Combine the futures and merge the results, dedupe blocks, and return a vector of block pointers
+        // If any of the individual futures fail, yield no block pointers
         unimplemented!();
+    }
+
+    fn block_pointers_from_range(
+        &self,
+        logger: &Logger,
+        from: u64,
+        to: u64,
+    ) -> Box<Future<Item = Vec<EthereumBlockPointer>, Error = Error> + Send> {
+        let eth = self.clone();
+        let logger = logger.clone();
+
+        // Generate `EthereumBlockPointers` from `from` backwards to `to`
+        Box::new(
+            self.block_hash_by_block_number(&logger, to)
+                .map(move |block_hash_opt| {
+                    EthereumBlockPointer {
+                        hash: block_hash_opt.unwrap(),
+                        number: to,
+                    }
+                })
+                .and_then(move |block_pointer| {
+                    stream::unfold(block_pointer, move |descendant_block_pointer| {
+                        if descendant_block_pointer.number < from {
+                            return None
+                        }
+                        
+                        // Populate the parent block pointer
+                        let query = eth
+                            .block_parent_hash_by_block_hash(&logger, descendant_block_pointer.hash)
+                            .map(move |block_hash_opt| {
+                                let parent_block_pointer = EthereumBlockPointer {
+                                    hash: block_hash_opt.unwrap(),
+                                    number: descendant_block_pointer.number - 1,
+                                };
+                                (descendant_block_pointer, parent_block_pointer)
+                            });
+                        Some(query)
+                    }).collect()
+                })
+                .map(move |mut block_pointers| {
+                    block_pointers.reverse();
+                    block_pointers
+                }),
+        )
     }
 
     fn find_first_blocks_with_logs(
