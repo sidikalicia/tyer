@@ -678,11 +678,6 @@ where
         let eth = self.clone();
         let logger = logger.clone();
         
-        // `N` is the maximum number of blocks we want the future to yield.
-        //
-        // If a block filter is provided but the contract set within it is emptythen
-        // just return the next `N` blocks forward from `from`.
-        //
         // Each trigger filter needs to be queried for the same block range
         // and the blocks yielded need to be deduped. If any error occurs while searching for a trigger type, the
         // entire operation fails.
@@ -714,14 +709,20 @@ where
                 }
             }
         }
-        
-        // Create block_filter future, map results to `EthereumBlockPointer`s
-        // If block filter has contracts, use `find_blocks_with_calls` and dedupe
-        // If the block filter has no contracts, use `find_block_pointers_in_range
 
-        // Combine the futures and merge the results, dedupe blocks, and return a vector of block pointers
-        // If any of the individual futures fail, yield no block pointers
-        unimplemented!();
+        // Combine the futures and merge the results, dedupe blocks, and return a vector of ordered block pointers
+        Box::new(future::join_all(block_futs)
+            .and_then(|block_pointer_chunks| {
+                let mut blocks = block_pointer_chunks
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<EthereumBlockPointer>>();
+                blocks.dedup();
+                blocks.sort_by(|a, b| {
+                    a.number.cmp(&b.number)
+                });
+                future::ok(blocks)
+            }))
     }
 
     fn blocks(
