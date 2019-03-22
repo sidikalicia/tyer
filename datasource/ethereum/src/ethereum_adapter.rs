@@ -2,7 +2,7 @@ use futures::future;
 use futures::prelude::*;
 use graph::ethabi::Token;
 use lazy_static::lazy_static;
-use std::collections::HashSet;
+use std::collections::{HashSet, HashMap};
 use std::sync::Arc;
 use tiny_keccak::{keccak256};
 
@@ -163,26 +163,23 @@ where
         let eth = self.clone();
         let logger = logger.to_owned();
 
-        let addresses: Vec<H160> = call_filter
-            .contract_address_function_signature_pairs
+
+        let call_filter: HashMap<Address, HashSet<[u8; 4]>> = call_filter
+            .contract_addresses_function_signatures
             .iter()
-            .map(|(addr, _fsig)| *addr)
+            .map(|(addr, fsigs)| {
+                (*addr, fsigs.iter()
+                 .map(|signature| {
+                     let hash = keccak256(signature.as_bytes());
+                     [hash[0], hash[1], hash[2], hash[3]]
+                 }).collect::<HashSet<[u8; 4]>>())
+            }).collect();
+        let addresses: Vec<H160> = call_filter
+            .iter()
+            .map(|(addr, _fsigs)| *addr)
             .collect::<HashSet<H160>>()
             .into_iter()
             .collect::<Vec<H160>>();
-        let function_signatures: Option<Vec<String>> = {
-            let fsigs = call_filter
-                .contract_address_function_signature_pairs
-                .iter()
-                .map(|(_addr, fsig)| fsig.clone())
-                .collect::<HashSet<String>>()
-                .into_iter()
-                .collect::<Vec<String>>();
-            match fsigs.len() {
-                0 => None,
-                _ => Some(fsigs),
-            }
-        };
 
         stream::unfold(from, move |start| {
             if start > to {
@@ -200,36 +197,29 @@ where
                 end
             );
 
-            let function_signature_hash_prefixes = function_signatures.clone().map(|signatures| {
-                signatures
-                    .iter()
-                    .map(|signature| {
-                        let sh = keccak256(signature.as_bytes());
-                        [sh[0], sh[1], sh[2], sh[3]]
-                    })
-                    .collect::<HashSet<[u8; 4]>>()
-            });
+            let call_filter = call_filter.clone();
             let query = eth.
-                calls(
-                    &logger,
-                    start,
-                    end,
-                    addresses.clone(),
-                )
+                calls(&logger, start, end, addresses.clone())
                 .map(move |calls| {
                     calls
                         .iter()
                         .filter(|call| {
-                            if function_signature_hash_prefixes.is_none() {
-                                // Keep all calls if no function filters were provided                                 
+                            // Ensure the call is to a contract the filter expressed an interest in
+                            // Ensure the call is to run a function the filter expressed an interest in
+                            // If the call is to a contract with no specified functions, keep the call
+                            if call_filter.get(&call.to).is_none() {
+                                return false
+                            }
+                            if call_filter.get(&call.to).unwrap().is_empty() {
                                 return true
                             }
                             let input = &call.input.0;
                             if input.len() < 4 {
+                                // TODO: Debug log this
                                 return false
                             }
-                            function_signature_hash_prefixes
-                                .clone()
+                            call_filter
+                                .get(&call.to)
                                 .unwrap()
                                 .contains(&input[..4])
                         })
@@ -710,9 +700,7 @@ where
         if block_filter_opt.is_some() {
             let block_filter = block_filter_opt.unwrap();
             match block_filter.contract_addresses.len() {
-                0 => {
-                    
-                }
+                0 => block_futs.push(Box::new(eth.blocks(&logger, from, to))),
                 _ => {
 
                 }

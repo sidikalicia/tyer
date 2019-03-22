@@ -2,7 +2,7 @@ use ethabi::{Bytes, Error as ABIError, Function, ParamType, Token};
 use failure::{Error, SyncFailure};
 use futures::Future;
 use slog::Logger;
-use std::collections::HashSet;
+use std::collections::{HashSet, HashMap};
 use std::iter::FromIterator;
 use web3::error::Error as Web3Error;
 use web3::types::*;
@@ -132,7 +132,7 @@ impl FromIterator<(Address, H256)> for EthereumLogFilter {
 
 #[derive(Clone, Debug)]
 pub struct EthereumCallFilter {
-    pub contract_address_function_signature_pairs: HashSet<(Address, String)>,
+    pub contract_addresses_function_signatures: HashMap<Address, HashSet<String>>,
 }
 
 #[derive(Clone, Debug)]
