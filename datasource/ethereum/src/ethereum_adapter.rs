@@ -162,8 +162,6 @@ where
         
         let eth = self.clone();
         let logger = logger.to_owned();
-
-
         let call_filter: HashMap<Address, HashSet<[u8; 4]>> = call_filter
             .contract_addresses_function_signatures
             .into_iter()
@@ -185,51 +183,36 @@ where
             if start > to {
                 return None
             }
-
-            let end = (start + 10_000 - 1)
-                .min(to);
+            let end = (start + 10_000 - 1).min(to);
             let new_start = end + 1;
-
-            debug!(
-                logger,
-                "Starting request for method calls in block range: [{}, {}]",
-                start,
-                end
-            );
-
             let call_filter = call_filter.clone();
-            let query = eth.
-                calls(&logger, start, end, addresses.clone())
-                .map(move |calls| {
-                    calls
-                        .iter()
-                        .filter(|call| {
-                            // Ensure the call is to a contract the filter expressed an interest in
-                            // Ensure the call is to run a function the filter expressed an interest in
-                            // If the call is to a contract with no specified functions, keep the call
-                            if call_filter.get(&call.to).is_none() {
-                                return false
-                            }
-                            if call_filter.get(&call.to).unwrap().is_empty() {
-                                return true
-                            }
-                            let input = &call.input.0;
-                            if input.len() < 4 {
-                                // TODO: Debug log this
-                                return false
-                            }
-                            call_filter
-                                .get(&call.to)
-                                .unwrap()
-                                .contains(&input[..4])
-                        })
-                        .map(|call| call.clone())
-                        .collect()
-                })
-                .map(move |calls| {
-                    (calls, new_start)
-                });
-            Some(query)
+            debug!(logger, "Starting request for method calls in block range: [{}, {}]", start, end);
+            Some(eth.calls(&logger, start, end, addresses.clone())
+                 .map(move |calls| {
+                     calls
+                         .into_iter()
+                         .filter(|call| {
+                             // Ensure the call is to a contract the filter expressed an interest in
+                             if !call_filter.contains_key(&call.to) {
+                                 return false
+                             }
+                             // If the call is to a contract with no specified functions, keep the call
+                             if call_filter.get(&call.to).unwrap().is_empty() {
+                                 return true
+                             }
+                             // Ensure the call is to run a function the filter expressed an interest in
+                             let input = &call.input.0;
+                             if input.len() < 4 { return false }
+                             call_filter
+                                 .get(&call.to)
+                                 .unwrap()
+                                 .contains(&input[..4])
+                         })
+                         .collect()
+                 })
+                 .map(move |calls| {
+                     (calls, new_start)
+                 }))
         })
     }
 
