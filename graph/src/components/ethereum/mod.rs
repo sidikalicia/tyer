@@ -6,7 +6,7 @@ mod types;
 pub use self::adapter::{
     EthereumAdapter, EthereumAdapterError, EthereumContractCall, EthereumContractCallError,
     EthereumContractState, EthereumContractStateError, EthereumContractStateRequest,
-    EthereumLogFilter, EthereumTransactionFilter, EthereumBlockFilter, EthereumNetworkIdentifier,
+    EthereumLogFilter, EthereumCallFilter, EthereumBlockFilter, EthereumNetworkIdentifier,
 };
 pub use self::listener::{ChainHeadUpdate, ChainHeadUpdateListener};
 pub use self::stream::{BlockStream, BlockStreamBuilder};

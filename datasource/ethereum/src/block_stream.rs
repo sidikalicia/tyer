@@ -324,10 +324,14 @@ where
                         // updated frequently.
                         let to = cmp::min(from + (100_000 - 1), to_limit);
 
+                        // TODO: Here we need to call a function which produces a vector of block pointers which
+                        // represent the next blocks which have triggers relevant to this subgraph. Those triggers
+                        // can be of type: `block`, `transaction`, or `event`
+
                         debug!(ctx.logger, "Finding next blocks with relevant events...");
                         Box::new(
                         ctx.eth_adapter
-                            .find_first_blocks_with_logs(&ctx.logger, from, to, log_filter.clone())
+                            .blocks_with_logs(&ctx.logger, from, to, log_filter.clone())
                             .and_then(move |descendant_ptrs| -> Box<Future<Item = _, Error = _> + Send> {
                                 debug!(ctx.logger, "Done finding next blocks.");
 

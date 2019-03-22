@@ -131,8 +131,8 @@ impl FromIterator<(Address, H256)> for EthereumLogFilter {
 }
 
 #[derive(Clone, Debug)]
-pub struct EthereumTransactionFilter {
-    pub contract_address_function_signature_pair: HashSet<(Address, String)>,
+pub struct EthereumCallFilter {
+    pub contract_address_function_signature_pairs: HashSet<(Address, String)>,
 }
 
 #[derive(Clone, Debug)]
@@ -172,13 +172,6 @@ pub trait EthereumAdapter: Send + Sync + 'static {
         block: Block<Transaction>,
     ) -> Box<Future<Item = EthereumBlock, Error = EthereumAdapterError> + Send>;
 
-    fn block_pointers_from_range(
-        &self,
-        logger: &Logger,
-        from: u64,
-        to: u64,
-    ) -> Box<Future<Item = Vec<EthereumBlockPointer>, Error = Error> + Send>;
-    
     // Find the hash for the parent block of the provided block hash
     fn block_parent_hash_by_block_hash(
         &self,
@@ -217,13 +210,13 @@ pub trait EthereumAdapter: Send + Sync + 'static {
         block_ptr: EthereumBlockPointer,
     ) -> Box<Future<Item = bool, Error = Error> + Send>;
 
-    fn find_first_blocks_with_triggers(
+    fn blocks_with_triggers(
         &self,
         logger: &Logger,
         from: u64,
         to: u64,
         log_filter: Option<EthereumLogFilter>,
-        tx_filter: Option<EthereumTransactionFilter>,
+        tx_filter: Option<EthereumCallFilter>,
         block_filter: Option<EthereumBlockFilter>,
     ) -> Box<Future<Item = Vec<EthereumBlockPointer>, Error = Error> + Send>;
 
@@ -239,7 +232,7 @@ pub trait EthereumAdapter: Send + Sync + 'static {
     /// reorgs.
     /// It is recommended that `to` be far behind the block number of latest block the Ethereum
     /// node is aware of.
-    fn find_first_blocks_with_logs(
+    fn blocks_with_logs(
         &self,
         logger: &Logger,
         from: u64,
@@ -247,14 +240,21 @@ pub trait EthereumAdapter: Send + Sync + 'static {
         log_filter: EthereumLogFilter,
     ) -> Box<Future<Item = Vec<EthereumBlockPointer>, Error = Error> + Send>;
 
-    fn find_first_blocks_with_transactions(
+    fn blocks_with_calls(
         &self,
         logger: &Logger,
         from: u64,
         to: u64,
-        addresses: EthereumTransactionFilter,
+        call_filter: EthereumCallFilter,
     ) -> Box<Future<Item = Vec<EthereumBlockPointer>, Error = Error> + Send>;
 
+    fn blocks(
+        &self,
+        logger: &Logger,
+        from: u64,
+        to: u64,
+    ) -> Box<Future<Item = Vec<EthereumBlockPointer>, Error = Error> + Send>;
+    
     /// Call the function of a smart contract.
     fn contract_call(
         &self,

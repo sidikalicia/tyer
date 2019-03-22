@@ -151,8 +151,7 @@ where
         logger: &Logger,
         from: u64,
         to: u64,
-        addresses: Vec<H160>,
-        function_signatures: Option<Vec<String>>,
+        call_filter: EthereumCallFilter,
     ) -> impl Stream<Item = Vec<EthereumCall>, Error = Error> + Send {
         if from > to {
             panic!(
@@ -163,6 +162,27 @@ where
         
         let eth = self.clone();
         let logger = logger.to_owned();
+
+        let addresses: Vec<H160> = call_filter
+            .contract_address_function_signature_pairs
+            .iter()
+            .map(|(addr, _fsig)| *addr)
+            .collect::<HashSet<H160>>()
+            .into_iter()
+            .collect::<Vec<H160>>();
+        let function_signatures: Option<Vec<String>> = {
+            let fsigs = call_filter
+                .contract_address_function_signature_pairs
+                .iter()
+                .map(|(_addr, fsig)| fsig.clone())
+                .collect::<HashSet<String>>()
+                .into_iter()
+                .collect::<Vec<String>>();
+            match fsigs.len() {
+                0 => None,
+                _ => Some(fsigs),
+            }
+        };
 
         stream::unfold(from, move |start| {
             if start > to {
@@ -651,37 +671,64 @@ where
         )
     }
 
-    fn find_first_blocks_with_triggers(
+    fn blocks_with_triggers(
         &self,
         logger: &Logger,
         from: u64,
         to: u64,
-        log_filter: Option<EthereumLogFilter>,
-        tx_filter: Option<EthereumTransactionFilter>,
-        block_filter: Option<EthereumBlockFilter>,
+        log_filter_opt: Option<EthereumLogFilter>,
+        call_filter_opt: Option<EthereumCallFilter>,
+        block_filter_opt: Option<EthereumBlockFilter>,
     ) -> Box<Future<Item = Vec<EthereumBlockPointer>, Error = Error> + Send> {
+        // If no filters are provided, return an empty vector of blocks.
+        if log_filter_opt.is_none() && call_filter_opt.is_none() && block_filter_opt.is_none() {
+            return Box::new(future::ok(vec![]))
+        }
+
+        let eth = self.clone();
+        let logger = logger.clone();
+        
         // `N` is the maximum number of blocks we want the future to yield.
         //
         // If a block filter is provided but the contract set within it is emptythen
         // just return the next `N` blocks forward from `from`.
         //
-        // If no filters are provided, return an empty vector of blocks.
-        //
         // Each trigger filter needs to be queried for the same block range
         // and the blocks yielded need to be deduped. If any error occurs while searching for a trigger type, the
         // entire operation fails.
-        //
 
         // Decide on range for block search
-        // Create log_filter future, map results to `EthereumBlockPointer`s
-        // Create transaction_filter future, map results to `EthereumBlockPointer`s
+
+        let mut block_futs: Vec<Box<Future<Item = Vec<EthereumBlockPointer>, Error = Error> + Send>> = vec![];
+
+        if log_filter_opt.is_some() {
+            block_futs.push(Box::new(eth.blocks_with_logs(&logger, from, to, log_filter_opt.unwrap())));
+        }
+        if call_filter_opt.is_some() {
+            block_futs.push(Box::new(eth.blocks_with_calls(&logger, from, to, call_filter_opt.unwrap())));
+        }
+        if block_filter_opt.is_some() {
+            let block_filter = block_filter_opt.unwrap();
+            match block_filter.contract_addresses.len() {
+                0 => {
+                    
+                }
+                _ => {
+
+                }
+            }
+        }
+        
         // Create block_filter future, map results to `EthereumBlockPointer`s
+        // If block filter has contracts, use `find_blocks_with_calls` and dedupe
+        // If the block filter has no contracts, use `find_block_pointers_in_range
+
         // Combine the futures and merge the results, dedupe blocks, and return a vector of block pointers
         // If any of the individual futures fail, yield no block pointers
         unimplemented!();
     }
 
-    fn block_pointers_from_range(
+    fn blocks(
         &self,
         logger: &Logger,
         from: u64,
@@ -721,30 +768,31 @@ where
                 .map(move |mut block_pointers| {
                     block_pointers.reverse();
                     block_pointers
-                }),
-        )
+                }))
     }
 
-    fn find_first_blocks_with_logs(
+    fn blocks_with_logs(
         &self,
         logger: &Logger,
         from: u64,
         to: u64,
         log_filter: EthereumLogFilter,
     ) -> Box<Future<Item = Vec<EthereumBlockPointer>, Error = Error> + Send> {
+        let eth = self.clone();
         Box::new(
             // Get a stream of all relevant logs in range
-            self.log_stream(&logger, from, to, log_filter)
-                // Get first chunk of logs
-                .take(1)
-                // Collect 0 or 1 vecs of logs
+            eth.log_stream(&logger, from, to, log_filter)
                 .collect()
-                // Produce Vec<block ptr> or None
-                .map(|chunks| match chunks.len() {
+                .map(|log_chunks| match log_chunks.len() {
                     0 => vec![],
-                    1 => {
+                    _ => {
+                        let logs: Vec<Log> = log_chunks
+                            .iter()
+                            .map(|log_chunk| log_chunk.clone())
+                            .flatten()
+                            .collect();
                         let mut block_ptrs = vec![];
-                        for log in chunks[0].iter() {
+                        for log in logs.iter() {
                             let hash = log
                                 .block_hash
                                 .expect("log from Eth node is missing block hash");
@@ -753,7 +801,6 @@ where
                                 .expect("log from Eth node is missing block number")
                                 .as_u64();
                             let block_ptr = EthereumBlockPointer::from((hash, number));
-
                             if !block_ptrs.contains(&block_ptr) {
                                 if let Some(prev) = block_ptrs.last() {
                                     assert!(prev.number < number);
@@ -763,19 +810,44 @@ where
                         }
                         block_ptrs
                     }
-                    _ => unreachable!(),
-                }),
-        )
+                }))
     }
 
-    fn find_first_blocks_with_transactions(
+    fn blocks_with_calls(
         &self,
         logger: &Logger,
         from: u64,
         to: u64,
-        tx_filter: EthereumTransactionFilter,
+        call_filter: EthereumCallFilter,
     ) -> Box<Future<Item = Vec<EthereumBlockPointer>, Error = Error> + Send> {
-        unimplemented!();
+        let eth = self.clone();
+        
+        Box::new(
+            eth.call_stream(&logger, from, to, call_filter)
+                .collect()
+                .map(|call_chunks| match call_chunks.len() {
+                    0 => vec![],
+                    _ => {
+                        let calls: Vec<EthereumCall> = call_chunks
+                            .iter()
+                            .map(|call_chunk| call_chunk.clone())
+                            .flatten()
+                            .collect();
+                        let mut block_ptrs = vec![];
+                        for call in calls.iter() {
+                            let hash = call.block_hash;
+                            let number = call.block_number;
+                            let block_ptr = EthereumBlockPointer::from((hash, number));
+                            if !block_ptrs.contains(&block_ptr) {
+                                if let Some(prev) = block_ptrs.last() {
+                                    assert!(prev.number < number);
+                                }
+                                block_ptrs.push(block_ptr);
+                            }
+                        }
+                        block_ptrs
+                    }
+                }))
     }
 
     fn contract_call(
