@@ -702,7 +702,15 @@ where
             match block_filter.contract_addresses.len() {
                 0 => block_futs.push(Box::new(eth.blocks(&logger, from, to))),
                 _ => {
-
+                    let call_filter = EthereumCallFilter {
+                        contract_addresses_function_signatures: block_filter
+                            .contract_addresses
+                            .into_iter()
+                            .map(|address| {
+                                (address, HashSet::default())
+                            }).collect::<HashMap<Address, HashSet<String>>>(),
+                    };
+                    block_futs.push(Box::new(eth.blocks_with_calls(&logger, from, to, call_filter)));
                 }
             }
         }
