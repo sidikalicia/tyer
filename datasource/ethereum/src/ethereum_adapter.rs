@@ -251,26 +251,19 @@ where
             if start > to {
                 return None
             }
-            
             let end = if start < *LOG_STREAM_FAST_SCAN_END {
                 (start + 100_000 - 1)
                     .min(to)
                     .min(*LOG_STREAM_FAST_SCAN_END)
             } else {
-                (start + 10_000 - 1)
-                    .min(to)
+                (start + 10_000 - 1).min(to)
             };
             let new_start = end + 1;
             
-            debug!(
-                logger,
-                "Starting request for logs in block range: [{}, {}]",
-                start,
-                end
-            );
+            debug!(logger, "Starting request for logs in block range: [{}, {}]", start, end);
             
             let log_filter = log_filter.clone();
-            let query = eth
+            Some(eth
                 .logs_with_sigs(
                     &logger,
                     start,
@@ -285,8 +278,7 @@ where
                 })
                 .map(move |logs| {
                     (logs, new_start)
-                });
-            Some(query)
+                }))
         })
     }
 
@@ -577,7 +569,7 @@ where
         let web3 = self.web3.clone();
 
         Box::new(
-            retry("eth_getBlockByHash", &logger)
+            retry("eth_getBlockByHash RPC call", &logger)
                 .no_limit()
                 .timeout_secs(60)
                 .run(move || {
@@ -723,18 +715,16 @@ where
                         if descendant_block_pointer.number < from {
                             return None
                         }
-                        
                         // Populate the parent block pointer
-                        let query = eth
-                            .block_parent_hash_by_block_hash(&logger, descendant_block_pointer.hash)
-                            .map(move |block_hash_opt| {
-                                let parent_block_pointer = EthereumBlockPointer {
-                                    hash: block_hash_opt.unwrap(),
-                                    number: descendant_block_pointer.number - 1,
-                                };
-                                (descendant_block_pointer, parent_block_pointer)
-                            });
-                        Some(query)
+                        Some(eth
+                             .block_parent_hash_by_block_hash(&logger, descendant_block_pointer.hash)
+                             .map(move |block_hash_opt| {
+                                 let parent_block_pointer = EthereumBlockPointer {
+                                     hash: block_hash_opt.unwrap(),
+                                     number: descendant_block_pointer.number - 1,
+                                 };
+                                 (descendant_block_pointer, parent_block_pointer)
+                             }))
                     }).collect()
                 })
                 .map(move |mut block_pointers| {
@@ -801,8 +791,7 @@ where
                     0 => vec![],
                     _ => {
                         let calls: Vec<EthereumCall> = call_chunks
-                            .iter()
-                            .map(|call_chunk| call_chunk.clone())
+                            .into_iter()
                             .flatten()
                             .collect();
                         let mut block_ptrs = vec![];
