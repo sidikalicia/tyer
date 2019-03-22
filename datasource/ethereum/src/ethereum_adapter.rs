@@ -166,9 +166,9 @@ where
 
         let call_filter: HashMap<Address, HashSet<[u8; 4]>> = call_filter
             .contract_addresses_function_signatures
-            .iter()
+            .into_iter()
             .map(|(addr, fsigs)| {
-                (*addr, fsigs.iter()
+                (addr, fsigs.iter()
                  .map(|signature| {
                      let hash = keccak256(signature.as_bytes());
                      [hash[0], hash[1], hash[2], hash[3]]
