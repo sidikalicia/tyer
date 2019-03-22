@@ -675,17 +675,11 @@ where
             return Box::new(future::ok(vec![]))
         }
 
-        let eth = self.clone();
-        let logger = logger.clone();
-        
         // Each trigger filter needs to be queried for the same block range
         // and the blocks yielded need to be deduped. If any error occurs while searching for a trigger type, the
         // entire operation fails.
-
-        // Decide on range for block search
-
+        let eth = self.clone();
         let mut block_futs: Vec<Box<Future<Item = Vec<EthereumBlockPointer>, Error = Error> + Send>> = vec![];
-
         if log_filter_opt.is_some() {
             block_futs.push(Box::new(eth.blocks_with_logs(&logger, from, to, log_filter_opt.unwrap())));
         }
@@ -709,8 +703,6 @@ where
                 }
             }
         }
-
-        // Combine the futures and merge the results, dedupe blocks, and return a vector of ordered block pointers
         Box::new(future::join_all(block_futs)
             .and_then(|block_pointer_chunks| {
                 let mut blocks = block_pointer_chunks
