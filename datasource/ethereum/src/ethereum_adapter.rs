@@ -701,7 +701,7 @@ where
         let eth = self.clone();
         let logger = logger.clone();
 
-        // Generate `EthereumBlockPointers` from `from` backwards to `to`
+        // Generate `EthereumBlockPointers` from `to` backwards to `from`
         Box::new(
             self.block_hash_by_block_number(&logger, to)
                 .map(move |block_hash_opt| {
