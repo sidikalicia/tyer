@@ -166,7 +166,7 @@ where
             .contract_addresses_function_signatures
             .into_iter()
             .map(|(addr, fsigs)| {
-                (addr, fsigs.iter()
+                (addr, fsigs.into_iter()
                  .map(|signature| {
                      let hash = keccak256(signature.as_bytes());
                      [hash[0], hash[1], hash[2], hash[3]]
