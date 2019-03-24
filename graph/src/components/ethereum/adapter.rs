@@ -135,9 +135,39 @@ pub struct EthereumCallFilter {
     pub contract_addresses_function_signatures: HashMap<Address, HashSet<String>>,
 }
 
+impl FromIterator<(Address, String)> for EthereumCallFilter {
+    fn from_iter<I>(iter: I) -> Self
+    where
+        I: IntoIterator<Item = (Address, String)>,
+    {
+        let mut lookup: HashMap<Address, HashSet<String>> = HashMap::new();
+        iter.into_iter().for_each(|(address, function_signature)| {
+            if lookup.contains_key(&address) {
+                lookup.insert(address, HashSet::default());
+            }
+            lookup.get_mut(&address).map(|set| {
+                set.insert(function_signature);
+                set
+            });
+        });
+        EthereumCallFilter { contract_addresses_function_signatures: lookup }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct EthereumBlockFilter {
     pub contract_addresses: HashSet<Address>,
+}
+
+impl FromIterator<Address> for EthereumBlockFilter {
+    fn from_iter<I>(iter: I) -> Self
+    where
+        I: IntoIterator<Item = Address>,
+    {
+        EthereumBlockFilter{
+            contract_addresses: iter.into_iter().collect(),
+        }
+    }
 }
 
 /// Common trait for components that watch and manage access to Ethereum.

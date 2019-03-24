@@ -118,6 +118,8 @@ pub struct BlockStream<S, C, E> {
     state: Mutex<BlockStreamState>,
     consecutive_err_count: u32,
     log_filter: EthereumLogFilter,
+    call_filter: EthereumCallFilter,
+    block_filter: EthereumBlockFilter,
     chain_head_update_sink: Sender<ChainHeadUpdate>,
     chain_head_update_stream: Receiver<ChainHeadUpdate>,
     ctx: BlockStreamContext<S, C, E>,
@@ -136,6 +138,8 @@ where
         node_id: NodeId,
         subgraph_id: SubgraphDeploymentId,
         log_filter: EthereumLogFilter,
+        call_filter: EthereumCallFilter,
+        block_filter: EthereumBlockFilter,
         reorg_threshold: u64,
         logger: Logger,
     ) -> Self {
@@ -149,6 +153,8 @@ where
             state: Mutex::new(BlockStreamState::New),
             consecutive_err_count: 0,
             log_filter,
+            call_filter,
+            block_filter,
             chain_head_update_sink,
             chain_head_update_stream,
             ctx: BlockStreamContext {
@@ -1060,6 +1066,8 @@ where
 
         // Create the actual subgraph-specific block stream
         let log_filter = create_log_filter_from_subgraph(manifest);
+        let call_filter = create_call_filter_from_subgraph(manifest);
+        let block_filter = create_block_filter_from_subgraph(manifest);
         let block_stream = BlockStream::new(
             self.subgraph_store.clone(),
             self.chain_store.clone(),
@@ -1067,6 +1075,8 @@ where
             self.node_id.clone(),
             manifest.id.clone(),
             log_filter,
+            call_filter,
+            block_filter,
             self.reorg_threshold,
             logger,
         );
@@ -1101,4 +1111,31 @@ fn create_log_filter_from_subgraph(manifest: &SubgraphManifest) -> EthereumLogFi
                 })
         })
         .collect::<EthereumLogFilter>()
+}
+
+fn create_call_filter_from_subgraph(manifest: &SubgraphManifest) -> EthereumCallFilter {
+    manifest
+        .data_sources
+        .iter()
+        .flat_map(|data_source| {
+            let contract_addr = data_source.source.address;
+            data_source
+                .mapping
+                .transaction_handlers
+                .iter()
+                .map(move |call_handler| {
+                    (contract_addr, call_handler.function.clone())
+                })
+        })
+        .collect::<EthereumCallFilter>()
+}
+
+fn create_block_filter_from_subgraph(manifest: &SubgraphManifest) -> EthereumBlockFilter {
+    manifest
+        .data_sources
+        .iter()
+        .map(|data_source| {
+            data_source.source.address
+        })
+        .collect::<EthereumBlockFilter>()
 }
