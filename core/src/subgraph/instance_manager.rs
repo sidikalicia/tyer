@@ -25,6 +25,7 @@ where
     pub dynamic_data_sources: Vec<DataSource>,
     pub store: Arc<S>,
     pub stream_builder: B,
+    pub restarts: u64,
 }
 
 type InstanceShutdownMap = Arc<RwLock<HashMap<SubgraphDeploymentId, CancelGuard>>>;
@@ -175,9 +176,7 @@ impl SubgraphInstanceManager {
         let dynamic_data_sources = vec![];
 
         // Create a block stream builder for this subgraph
-        let stream_builder = block_stream_builder
-            .with_subgraph(&manifest)
-            .with_logger(logger.clone());
+        let stream_builder = block_stream_builder.with_subgraph(&manifest);
 
         // Load the subgraph
         let deployment_id = manifest.id.clone();
@@ -190,25 +189,32 @@ impl SubgraphInstanceManager {
         let subgraph_state = SubgraphState {
             deployment_id,
             instance,
-            logger,
             templates,
             dynamic_data_sources,
             store,
             stream_builder,
+            restarts: 0,
+            logger,
         };
 
         tokio::spawn(loop_fn(subgraph_state, move |mut subgraph_state| {
-            debug!(subgraph_state.logger, "Starting or restarting subgraph");
+            let logger = subgraph_state
+                .logger
+                .new(o!("restarts" => subgraph_state.restarts));
+
+            debug!(logger, "Starting or restarting subgraph");
 
             // Clone a few things for different parts of the async processing
             let id_for_err = subgraph_state.deployment_id.clone();
             let store_for_err = subgraph_state.store.clone();
-            let logger_for_err = subgraph_state.logger.clone();
-            let logger_for_data_sources_check = subgraph_state.logger.clone();
+            let logger_for_err = logger.clone();
+            let logger_for_data_sources_check = logger.clone();
+            let logger_for_stream = logger.clone();
 
             // Update the subgraph_state of the stream with new data sources
             subgraph_state.stream_builder = subgraph_state
                 .stream_builder
+                .with_logger(logger.clone())
                 .with_data_sources(&subgraph_state.dynamic_data_sources);
 
             let block_stream_canceler = CancelGuard::new();
@@ -225,6 +231,8 @@ impl SubgraphInstanceManager {
                 .unwrap()
                 .insert(subgraph_state.deployment_id.clone(), block_stream_canceler);
 
+            let instances = instances.clone();
+
             let new_data_sources: Arc<RwLock<Option<Vec<DataSource>>>> =
                 Arc::new(RwLock::new(None));
             let new_data_sources_write = new_data_sources.clone();
@@ -234,25 +242,29 @@ impl SubgraphInstanceManager {
                 .take_while(move |_| {
                     let data_sources = new_data_sources_read.read().unwrap();
                     if let Some(ref data_sources) = *data_sources {
-                        debug!(
-                            logger_for_data_sources_check,
-                            "Have {} new data sources, need to restart",
-                            data_sources.len()
-                        );
-                        Ok(data_sources.len() == 0)
+                        if data_sources.is_empty() {
+                            Ok(true)
+                        } else {
+                            debug!(
+                                logger_for_data_sources_check,
+                                "Have {} new data sources, need to restart",
+                                data_sources.len()
+                            );
+                            Ok(false)
+                        }
                     } else {
                         Ok(true)
                     }
                 })
                 .fold(subgraph_state, move |subgraph_state, block| {
-                    debug!(subgraph_state.logger, "Starting block stream");
+                    debug!(logger_for_stream, "Starting block stream");
 
                     let id = subgraph_state.deployment_id.clone();
                     let instance = subgraph_state.instance.clone();
                     let store = subgraph_state.store.clone();
                     let block_stream_cancel_handle = block_stream_cancel_handle.clone();
                     let new_data_sources_write = new_data_sources_write.clone();
-                    let logger = subgraph_state.logger.new(o!(
+                    let logger = logger_for_stream.new(o!(
                         "block_number" => format!("{:?}", block.block.number.unwrap()),
                         "block_hash" => format!("{:?}", block.block.hash.unwrap())
                     ));
@@ -339,7 +351,13 @@ impl SubgraphInstanceManager {
                             // Fail early if any of the data sources couln't be created (e.g.
                             // due to parameters missing)
                             let data_sources = match data_sources {
-                                Ok(data_sources) => data_sources,
+                                Ok(data_sources) => {
+                                    if data_sources.is_empty() {
+                                        None
+                                    } else {
+                                        Some(data_sources)
+                                    }
+                                }
                                 Err(e) => return future::err(e),
                             };
 
@@ -351,7 +369,7 @@ impl SubgraphInstanceManager {
 
                             // Track the new data sources
                             let mut new_data_sources = new_data_sources_write.write().unwrap();
-                            *new_data_sources = Some(data_sources);
+                            *new_data_sources = data_sources;
 
                             // TODO:
                             // 1. Request and process events for the current block
@@ -403,6 +421,14 @@ impl SubgraphInstanceManager {
                     if let Some(data_sources) = new_data_sources.take() {
                         subgraph_state.dynamic_data_sources.extend(data_sources);
                     }
+
+                    subgraph_state.restarts += 1;
+
+                    // Cancel the stream for real
+                    instances
+                        .write()
+                        .unwrap()
+                        .remove(&subgraph_state.deployment_id);
 
                     // And restart the subgraph
                     Loop::Continue(subgraph_state)
