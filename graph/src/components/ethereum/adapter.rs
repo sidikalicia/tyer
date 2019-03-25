@@ -240,6 +240,14 @@ pub trait EthereumAdapter: Send + Sync + 'static {
         block_ptr: EthereumBlockPointer,
     ) -> Box<Future<Item = bool, Error = Error> + Send>;
 
+    fn calls_in_block(
+        &self,
+        logger: &Logger,
+        block_number: u64,
+        block_hash: H256,
+        call_filter: EthereumCallFilter,
+    ) -> Box<Future<Item = Vec<EthereumCall>, Error = Error> + Send>;
+
     fn blocks_with_triggers(
         &self,
         logger: &Logger,
