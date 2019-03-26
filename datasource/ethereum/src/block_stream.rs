@@ -596,7 +596,7 @@ where
                                  // Update our copy of the subgraph ptr to reflect the
                                  // value it will have after descendant_block is
                                  // processed.
-                                 subgraph_ptr = descendant_block.ethereum_block.into();
+                                 subgraph_ptr = (&descendant_block.ethereum_block).into();
 
                                  Ok(descendant_block)
                              })
