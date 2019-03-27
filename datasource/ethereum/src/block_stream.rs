@@ -816,6 +816,10 @@ where
         block_hash: H256,
     ) -> impl Future<Item = EthereumBlockWithCalls, Error = Error> + Send {
         let ctx = self.clone();
+        let eth = self.eth_adapter.clone();
+        let logger = self.logger.clone();
+        let include_calls_in_block = self.include_calls_in_blocks;
+        
         // Search for the block in the store first then use the ethereum adapter as a backup
         let block = future::result(ctx.chain_store.block(block_hash))
             .and_then(move |local_block_opt| -> Box<Future<Item = _, Error = _> + Send> {
@@ -848,11 +852,24 @@ where
                     }
                 }
             })
-            .and_then(|block| {
-                future::ok(EthereumBlockWithCalls {
-                    ethereum_block: block,
-                    calls: None,
-                })
+            .and_then(move |block| -> Box<Future<Item = _, Error = _> + Send>{
+                if !include_calls_in_block {
+                    return Box::new(future::ok(EthereumBlockWithCalls {
+                        ethereum_block: block,
+                        calls: None,
+                    }))
+                }
+                let calls = eth.calls_in_block(
+                    &logger,
+                    block.block.number.unwrap().as_u64(),
+                    block.block.hash.unwrap(),
+                ).and_then(move |calls| {
+                    future::ok(EthereumBlockWithCalls {
+                        ethereum_block: block,
+                        calls: Some(calls),
+                    })
+                });
+                Box::new(calls)
             });
         Box::new(block)
     }
