@@ -97,8 +97,8 @@ impl From<&Trace> for EthereumCall {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum EthereumTrigger {
     Block,
-    Transaction,
-    Event,
+    Transaction(EthereumCall),
+    Log(Log),
 }
 
 /// Ethereum block data.

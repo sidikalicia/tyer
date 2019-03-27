@@ -600,10 +600,27 @@ where
 
                                  Ok(descendant_block)
                              })
-                             .map(|descendant_block| {
+                             .map(move |descendant_block| {
                                  // Map the descendant block to an `EthereumBlockWithTriggers`
                                  // To do this we need to scan the entire block for
                                  // call triggers and block triggers
+                                 // let log_triggers = descendant_block
+                                 //     .block
+                                 //     .transaction_receipts
+                                 //     .iter()
+                                 //     .flat_map(|receipt| {
+                                 //         receipt
+                                 //             .logs
+                                 //             .iter()
+                                 //             .filter(|log| {
+                                 //                 log_filter.matches(log)
+                                 //             })
+                                 //             .map(|log| {
+                                 //                 EthereumTrigger::Log(log)
+                                 //             })
+                                 //     });
+
+                                 
                                  EthereumBlockWithTriggers {
                                      ethereum_block: descendant_block.ethereum_block,
                                      triggers: vec![],
