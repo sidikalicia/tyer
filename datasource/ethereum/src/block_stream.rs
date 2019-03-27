@@ -406,7 +406,7 @@ where
                                             "Found {} block(s) with events.",
                                             descendant_ptrs.len()
                                         );
-                                        // let descendant_hashes = descendant_ptrs.into_iter().map(|ptr| ptr.hash).collect();
+                                        let descendant_hashes = descendant_ptrs.into_iter().map(|ptr| ptr.hash).collect();
                                         Box::new(future::ok(
                                             // Proceed to those blocks
                                             ReconciliationStep::ProcessDescendantBlocks {
@@ -414,7 +414,7 @@ where
                                                 log_filter: log_filter.clone(),
                                                 call_filter: call_filter.clone(),
                                                 block_filter: block_filter.clone(),
-                                                descendant_blocks: Box::new(ctx.load_blocks(descendant_ptrs)),
+                                                descendant_blocks: Box::new(ctx.load_blocks(descendant_hashes)),
                                             }
                                         ))
                                     }
@@ -513,7 +513,7 @@ where
                 // This means we need to revert this block.
                 
                 // First, load the block in order to get the parent hash.
-                Box::new(ctx.load_block(subgraph_ptr).and_then(move |block| {
+                Box::new(ctx.load_block(subgraph_ptr.hash).and_then(move |block| {
                     debug!(
                         ctx.logger,
                         "Reverting block to get back to main chain";
@@ -779,7 +779,7 @@ where
     /// Load Ethereum blocks in bulk, returning results as they come back as a Stream.
     fn load_blocks(
         &self,
-        block_ptrs: Vec<EthereumBlockPointer>,
+        block_hashes: Vec<H256>,
     ) -> impl Stream<Item = EthereumBlockWithCalls, Error = Error> + Send {
         let ctx = self.clone();
 
@@ -787,24 +787,24 @@ where
             .map(|s| s.to_str().unwrap().parse().unwrap())
             .unwrap_or(50);
 
-        let block_ptr_batches = block_ptrs
+        let block_hashes_batches = block_hashes
             .chunks(block_batch_size) // maximum batch size
             .map(|chunk| chunk.to_vec())
             .collect::<Vec<_>>();
 
         // Return a stream that lazily loads batches of blocks
-        stream::iter_ok::<_, Error>(block_ptr_batches)
-            .map(move |block_ptrs_batch| {
+        stream::iter_ok::<_, Error>(block_hashes_batches)
+            .map(move |block_hashes_batch| {
                 debug!(
                     ctx.logger,
                     "Requesting {} block(s) in parallel...",
-                    block_ptrs_batch.len()
+                    block_hashes_batch.len()
                 );
 
                 // Start loading all blocks in this batch
-                let block_futures = block_ptrs_batch
+                let block_futures = block_hashes_batch
                     .into_iter()
-                    .map(|block_ptr| ctx.load_block(block_ptr));
+                    .map(|block_hash| ctx.load_block(block_hash));
 
                 stream::futures_ordered(block_futures)
             })
@@ -813,98 +813,48 @@ where
 
     fn load_block(
         &self,
-        block_ptr: EthereumBlockPointer,
+        block_hash: H256,
     ) -> impl Future<Item = EthereumBlockWithCalls, Error = Error> + Send {
         let ctx = self.clone();
-        let block_number = block_ptr.number;
-        let block_hash = block_ptr.hash;
-        // let local_block_opt = ctx.chain_store.block(block_hash);
-        // let block = match local_block_opt {
-        //     Some(block) => future::ok(block),
-        //     None => {
-        //         let logger = ctx.logger.clone();
-        //         let ctx_1 = ctx.clone();
-        //         let ctx_2 = ctx_1.clone();
-        //         ctx_1.eth_adapter
-        //             .block_by_hash(&ctx1.loger, block_hash)
-        //             .and_then(move |block_opt| {
-        //                 block_opt.ok_or_else(move || {
-        //                     format_err!("Ethereum node could not find block with hash {}", block_hash)
-        //                 })
-        //             })
-        //             .and_then(move |block| {
-        //                 ctx_1
-        //                     .eth_adapter
-        //                     .load_full_block(&logger, block)
-        //                     .map_err(|e| format_err!("Error loading full block: {}", e))
-        //             })
-        //             .and_then(move |block| {
-        //                 // Cache in store for later
-        //                 ctx_clone2
-        //                     .chain_store
-        //                     .upsert_blocks(stream::once(Ok(block.clone())))
-        //                     .map(move |()| block)
-        //             })
-        //     }
-        // };
-        // let block_with_calls = block
-        //     .and_then(|block| {
-        //         // Map the `EthereumBlock` to an `EthereumBlockWithCalls`
-        //     })
-
-        // Box::new(block_with_calls)
-
-        // Check store first
-        future::result(ctx.chain_store.block(block_hash)).and_then(
-            move |local_block_opt| -> Box<Future<Item = _, Error = _> + Send> {
-                if let Some(local_block) = local_block_opt {
-                    Box::new(future::ok(local_block)
-                             .map(|block| {
-                                 EthereumBlockWithCalls {
-                                     ethereum_block: block,
-                                     calls: None,
-                                 }
-                             }))
-                } else {
-                    let ctx_clone1 = ctx;
-                    let ctx_clone2 = ctx_clone1.clone();
-
-                    // Request from Ethereum node instead
-                    Box::new(
-                        ctx_clone1
-                            .eth_adapter
-                            .block_by_hash(&ctx_clone1.logger, block_hash)
+        // Search for the block in the store first then use the ethereum adapter as a backup
+        let block = future::result(ctx.chain_store.block(block_hash))
+            .and_then(move |local_block_opt| -> Box<Future<Item = _, Error = _> + Send> {
+                match local_block_opt {
+                    Some(block) => Box::new(future::ok(block)),
+                    None => {
+                        let logger = ctx.logger.clone();
+                        let ctx_1 = ctx.clone();
+                        let ctx_2 = ctx_1.clone();
+                        Box::new(ctx_1.eth_adapter
+                            .block_by_hash(&logger, block_hash)
                             .and_then(move |block_opt| {
                                 block_opt.ok_or_else(move || {
-                                    format_err!(
-                                        "Ethereum node could not find block with hash {}",
-                                        block_hash
-                                    )
+                                    format_err!("Ethereum node could not find block with hash {}", block_hash)
                                 })
                             })
                             .and_then(move |block| {
-                                ctx_clone1
+                                ctx_1
                                     .eth_adapter
-                                    .load_full_block(&ctx_clone1.logger, block)
+                                    .load_full_block(&logger, block)
                                     .map_err(|e| format_err!("Error loading full block: {}", e))
                             })
                             .and_then(move |block| {
                                 // Cache in store for later
-                                ctx_clone2
+                                ctx_2
                                     .chain_store
                                     .upsert_blocks(stream::once(Ok(block.clone())))
                                     .map(move |()| block)
-                            })
-                            .map(move |block| {
-                                EthereumBlockWithCalls {
-                                    ethereum_block: block,
-                                    calls: None,
-                                }
-                            }),
-                    )
+                            }))
+                    }
                 }
-            },
-        )
+            })
+            .and_then(|block| {
+                future::ok(EthereumBlockWithCalls {
+                    ethereum_block: block,
+                    calls: None,
+                })
+            });
+        Box::new(block)
     }
 }
 
