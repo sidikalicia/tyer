@@ -60,9 +60,9 @@ enum ReconciliationStep {
     /// Move forwards, processing one or more blocks.
     ProcessDescendantBlocks {
         from: EthereumBlockPointer,
-        log_filter: Option<EthereumLogFilter>,
-        call_filter: Option<EthereumCallFilter>,
-        block_filter: Option<EthereumBlockFilter>,
+        log_filter_opt: Option<EthereumLogFilter>,
+        call_filter_opt: Option<EthereumCallFilter>,
+        block_filter_opt: Option<EthereumBlockFilter>,
         descendant_blocks: Box<Stream<Item = EthereumBlockWithCalls, Error = Error> + Send>,
     },
 
@@ -411,9 +411,9 @@ where
                                             // Proceed to those blocks
                                             ReconciliationStep::ProcessDescendantBlocks {
                                                 from: subgraph_ptr,
-                                                log_filter: log_filter.clone(),
-                                                call_filter: call_filter.clone(),
-                                                block_filter: block_filter.clone(),
+                                                log_filter_opt: log_filter.clone(),
+                                                call_filter_opt: call_filter.clone(),
+                                                block_filter_opt: block_filter.clone(),
                                                 descendant_blocks: Box::new(ctx.load_blocks(descendant_hashes)),
                                             }
                                         ))
@@ -481,9 +481,9 @@ where
                         // Note that head_ancestor is a child of subgraph_ptr.
                         Box::new(future::ok(ReconciliationStep::ProcessDescendantBlocks {
                             from: subgraph_ptr,
-                            log_filter: log_filter.clone(),
-                            call_filter: call_filter.clone(),
-                            block_filter: block_filter.clone(),
+                            log_filter_opt: log_filter.clone(),
+                            call_filter_opt: call_filter.clone(),
+                            block_filter_opt: block_filter.clone(),
                             descendant_blocks: Box::new(stream::once(Ok(head_ancestor))),
                         }))
                     } else {
@@ -560,12 +560,15 @@ where
             }
             ReconciliationStep::ProcessDescendantBlocks {
                 from,
-                log_filter,
-                call_filter,
-                block_filter,
+                log_filter_opt,
+                call_filter_opt,
+                block_filter_opt,
                 descendant_blocks,
             } => {
                 let mut subgraph_ptr = from;
+                let log_filter_opt = log_filter_opt.clone();
+                let call_filter_opt = call_filter_opt.clone();
+                let block_filter_opt = block_filter_opt.clone();
 
                 // Advance the subgraph ptr to each of the specified descendants and yield each
                 // block with relevant events.
@@ -604,23 +607,22 @@ where
                                  // Map the descendant block to an `EthereumBlockWithTriggers`
                                  // To do this we need to scan the entire block for
                                  // call triggers and block triggers
-                                 // let log_triggers = descendant_block
-                                 //     .block
-                                 //     .transaction_receipts
-                                 //     .iter()
-                                 //     .flat_map(|receipt| {
-                                 //         receipt
-                                 //             .logs
-                                 //             .iter()
-                                 //             .filter(|log| {
-                                 //                 log_filter.matches(log)
-                                 //             })
-                                 //             .map(|log| {
-                                 //                 EthereumTrigger::Log(log)
-                                 //             })
-                                 //     });
-
                                  
+                                 let log_triggers = parse_log_triggers(
+                                     log_filter_opt.clone(),
+                                     &descendant_block.ethereum_block,
+                                 );
+                                 let call_triggers = parse_call_triggers(
+                                     call_filter_opt.clone(),
+                                     &descendant_block,
+                                 );
+                                 let block_triggers = parse_block_triggers(
+                                     block_filter_opt.clone(),
+                                     &descendant_block,
+                                 );
+
+                                 // Order the triggers
+
                                  EthereumBlockWithTriggers {
                                      ethereum_block: descendant_block.ethereum_block,
                                      triggers: vec![],
@@ -1253,4 +1255,25 @@ fn create_block_filter_from_subgraph(manifest: &SubgraphManifest) -> Option<Ethe
         0 => return None,
         _ => return Some(block_filter),
     }
+}
+
+fn parse_log_triggers(
+    log_filter: Option<EthereumLogFilter>,
+    block: &EthereumBlock
+) -> Vec<EthereumTrigger> {
+    vec![]
+}
+
+fn parse_call_triggers(
+    call_filter: Option<EthereumCallFilter>,
+    block: &EthereumBlockWithCalls,
+) -> Vec<EthereumTrigger> {
+    vec![]
+}
+
+fn parse_block_triggers(
+    block_filter: Option<EthereumBlockFilter>,
+    block: &EthereumBlockWithCalls,
+) -> Vec<EthereumTrigger> {
+    vec![]
 }

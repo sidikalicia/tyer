@@ -62,6 +62,7 @@ pub mod prelude {
         EthereumAdapterError, EthereumBlock, EthereumBlockWithCalls, EthereumBlockWithTriggers,
         EthereumBlockData, EthereumBlockPointer, EthereumEventData, EthereumLogFilter,
         EthereumCallFilter, EthereumBlockFilter, EthereumNetworkIdentifier, EthereumTransactionData,
+        EthereumTrigger,
     };
     pub use crate::components::graphql::{
         GraphQlRunner, QueryResultFuture, SubscriptionResultFuture,

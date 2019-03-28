@@ -13,4 +13,5 @@ pub use self::stream::{BlockStream, BlockStreamBuilder};
 pub use self::types::{
     EthereumBlock, EthereumBlockWithTriggers, EthereumBlockWithCalls, EthereumBlockData,
     EthereumBlockPointer, EthereumEventData, EthereumTransactionData, EthereumCall,
+    EthereumTrigger,
 };
