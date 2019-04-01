@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use ethabi::LogParam;
 use web3::types::*;
 
@@ -22,6 +24,12 @@ pub struct EthereumBlock {
 impl EthereumBlock {
     pub fn transaction_for_log(&self, log: &Log) -> Option<Transaction> {
         log.transaction_hash
+            .and_then(|hash| self.block.transactions.iter().find(|tx| tx.hash == hash))
+            .cloned()
+    }
+
+    pub fn transaction_for_call(&self, call: &EthereumCall) -> Option<Transaction> {
+        call.transaction_hash
             .and_then(|hash| self.block.transactions.iter().find(|tx| tx.hash == hash))
             .cloned()
     }
@@ -97,8 +105,32 @@ impl From<&Trace> for EthereumCall {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum EthereumTrigger {
     Block,
-    Transaction(EthereumCall),
+    Call(EthereumCall),
     Log(Log),
+}
+
+impl EthereumTrigger {
+    pub fn transaction_index(
+        &self,
+        transaction_hash_index_lookup: &HashMap<H256, u64>
+    ) -> Result<Option<u64>, ()>  {
+        // TODO: Returning Result<Option> smells
+        match self {
+            EthereumTrigger::Log(log) => {
+                match transaction_hash_index_lookup.get(&log.transaction_hash.unwrap()) {
+                    Some(index) => Ok(Some(*index)),
+                    None => Err(()),
+                }
+            }
+            EthereumTrigger::Call(call) => {
+                match transaction_hash_index_lookup.get(&call.transaction_hash.unwrap()) {
+                    Some(index) => Ok(Some(*index)),
+                    None => Err(()),
+                }
+            }
+            EthereumTrigger::Block => Ok(None)
+        }
+    }
 }
 
 /// Ethereum block data.

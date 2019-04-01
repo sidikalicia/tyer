@@ -167,6 +167,8 @@ impl SubgraphInstanceManager {
         tokio::spawn(
             block_stream
                 .for_each(move |block| {
+                    let triggers = block.triggers;
+                    let block = block.ethereum_block;
                     let id = id_for_block.clone();
                     let instance = instance.clone();
                     let store = store_for_events.clone();
@@ -176,25 +178,17 @@ impl SubgraphInstanceManager {
                         "block_hash" => format!("{:?}", block.block.hash.unwrap())
                     ));
 
-                    // Extract logs relevant to the subgraph
-                    let logs: Vec<_> = block
-                        .transaction_receipts
-                        .iter()
-                        .flat_map(|receipt| {
-                            receipt.logs.iter().filter(|log| instance.matches_log(&log))
-                        })
-                        .cloned()
-                        .collect();
 
-                    if logs.len() == 0 {
+                    // TODO: Check the triggers instead of the logs
+                    if triggers.len() == 0 {
                         debug!(logger, "No events found in this block for this subgraph");
-                    } else if logs.len() == 1 {
+                    } else if triggers.len() == 1 {
                         info!(logger, "1 event found in this block for this subgraph");
                     } else {
                         info!(
                             logger,
                             "{} events found in this block for this subgraph",
-                            logs.len()
+                            triggers.len()
                         );
                     }
 
@@ -204,28 +198,20 @@ impl SubgraphInstanceManager {
                     let block_for_transact = block_for_process.clone();
                     let logger_for_process = logger;
                     let logger_for_transact = logger_for_process.clone();
-                    stream::iter_ok::<_, CancelableError<Error>>(logs)
-                        .fold(vec![], move |entity_operations, log| {
+                    // TODO: The stream should be over the triggers in the block yielded
+                    // Match the trigger and call the `SubgraphInstance::process_<trigger_type>` method
+                    stream::iter_ok::<_, CancelableError<Error>>(triggers)
+                        // TODO: Understand why the return type needs to be specified to get it to compile
+                        .fold(vec![], move |entity_operations, trigger| {
                             let logger = logger_for_process.clone();
                             let instance = instance.clone();
                             let block = block_for_process.clone();
-
-                            let transaction = block
-                                .transaction_for_log(&log)
-                                .map(Arc::new)
-                                .ok_or_else(|| format_err!("Found no transaction for event"));
-
-                            future::result(transaction).and_then(move |transaction| {
-                                instance
-                                    .process_log(
-                                        &logger,
-                                        block,
-                                        transaction,
-                                        log,
-                                        entity_operations,
-                                    )
-                                    .map_err(|e| format_err!("Failed to process event: {}", e))
-                            })
+                            instance.process_trigger(
+                                &logger,
+                                block,
+                                trigger,
+                                entity_operations
+                            )
                         })
                         .and_then(move |entity_operations| {
                             let block = block_for_transact.clone();

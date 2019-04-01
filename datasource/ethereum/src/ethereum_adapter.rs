@@ -173,23 +173,14 @@ where
         
         let eth = self.clone();
         let logger = logger.to_owned();
-        let call_filter: HashMap<Address, HashSet<[u8; 4]>> = call_filter
-            .contract_addresses_function_signatures
-            .into_iter()
-            .map(|(addr, fsigs)| {
-                (addr, fsigs.into_iter()
-                 .map(|signature| {
-                     let hash = keccak256(signature.as_bytes());
-                     [hash[0], hash[1], hash[2], hash[3]]
-                 }).collect::<HashSet<[u8; 4]>>())
-            }).collect();
+
         let addresses: Vec<H160> = call_filter
+            .contract_addresses_function_signatures
             .iter()
             .map(|(addr, _fsigs)| *addr)
             .collect::<HashSet<H160>>()
             .into_iter()
             .collect::<Vec<H160>>();
-
         stream::unfold(from, move |start| {
             if start > to {
                 return None
@@ -203,21 +194,7 @@ where
                      calls
                          .into_iter()
                          .filter(|call| {
-                             // Ensure the call is to a contract the filter expressed an interest in
-                             if !call_filter.contains_key(&call.to) {
-                                 return false
-                             }
-                             // If the call is to a contract with no specified functions, keep the call
-                             if call_filter.get(&call.to).unwrap().is_empty() {
-                                 return true
-                             }
-                             // Ensure the call is to run a function the filter expressed an interest in
-                             let input = &call.input.0;
-                             if input.len() < 4 { return false }
-                             call_filter
-                                 .get(&call.to)
-                                 .unwrap()
-                                 .contains(&input[..4])
+                             call_filter.matches(&call)
                          })
                          .collect()
                  })
@@ -720,14 +697,7 @@ where
             match block_filter.contract_addresses.len() {
                 0 => block_futs.push(Box::new(eth.blocks(&logger, from, to))),
                 _ => {
-                    let call_filter = EthereumCallFilter {
-                        contract_addresses_function_signatures: block_filter
-                            .contract_addresses
-                            .into_iter()
-                            .map(|address| {
-                                (address, HashSet::default())
-                            }).collect::<HashMap<Address, HashSet<String>>>(),
-                    };
+                    let call_filter = EthereumCallFilter::from(block_filter);
                     block_futs.push(Box::new(eth.blocks_with_calls(&logger, from, to, call_filter)));
                 }
             }

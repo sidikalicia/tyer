@@ -132,15 +132,43 @@ impl FromIterator<(Address, H256)> for EthereumLogFilter {
 
 #[derive(Clone, Debug)]
 pub struct EthereumCallFilter {
-    pub contract_addresses_function_signatures: HashMap<Address, HashSet<String>>,
+    pub contract_addresses_function_signatures: HashMap<Address, HashSet<[u8; 4]>>,
 }
 
-impl FromIterator<(Address, String)> for EthereumCallFilter {
+impl EthereumCallFilter {
+    pub fn matches(&self, call: &EthereumCall) -> bool {
+        // Ensure the call is to a contract the filter expressed an interest in
+        if !self
+            .contract_addresses_function_signatures
+            .contains_key(&call.to) {
+                return false
+            }
+        // If the call is to a contract with no specified functions, keep the call        
+        if self
+            .contract_addresses_function_signatures
+            .get(&call.to)
+            .unwrap()
+            .is_empty() {
+                // Allow the ability to match on calls to a contract generally
+                // If you want to match on a generic call to contract this limits you
+                // from matching with a specific call to a contract
+                return true
+            }
+        // Ensure the call is to run a function the filter expressed an interest in
+        self
+            .contract_addresses_function_signatures
+            .get(&call.to)
+            .unwrap()
+            .contains(&call.input.0[..4])
+    }
+}
+
+impl FromIterator<(Address, [u8; 4])> for EthereumCallFilter {
     fn from_iter<I>(iter: I) -> Self
     where
-        I: IntoIterator<Item = (Address, String)>,
+        I: IntoIterator<Item = (Address, [u8; 4])>,
     {
-        let mut lookup: HashMap<Address, HashSet<String>> = HashMap::new();
+        let mut lookup: HashMap<Address, HashSet<[u8; 4]>> = HashMap::new();
         iter.into_iter().for_each(|(address, function_signature)| {
             if lookup.contains_key(&address) {
                 lookup.insert(address, HashSet::default());
@@ -151,6 +179,19 @@ impl FromIterator<(Address, String)> for EthereumCallFilter {
             });
         });
         EthereumCallFilter { contract_addresses_function_signatures: lookup }
+    }
+}
+
+impl From<EthereumBlockFilter> for EthereumCallFilter {
+    fn from(ethereum_block_filter: EthereumBlockFilter) -> Self {
+        Self {
+            contract_addresses_function_signatures: ethereum_block_filter
+                .contract_addresses
+                .into_iter()
+                .map(|address| {
+                    (address, HashSet::default())
+                }).collect::<HashMap<Address, HashSet<[u8; 4]>>>(),
+        }
     }
 }
 

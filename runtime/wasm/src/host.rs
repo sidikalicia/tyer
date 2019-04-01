@@ -105,6 +105,8 @@ pub struct RuntimeHost {
     data_source_contract: Source,
     data_source_contract_abi: MappingABI,
     data_source_event_handlers: Vec<MappingEventHandler>,
+    data_source_call_handlers: Vec<MappingTransactionHandler>,
+    data_source_block_handler: MappingBlockHandler,
     handle_event_sender: Sender<HandleEventRequest>,
     _guard: oneshot::Sender<()>,
 }
@@ -146,6 +148,8 @@ impl RuntimeHost {
         let data_source_name = config.data_source.name.clone();
         let data_source_contract = config.data_source.source.clone();
         let data_source_event_handlers = config.data_source.mapping.event_handlers.clone();
+        let data_source_call_handlers = config.data_source.mapping.transaction_handlers.clone();
+        let data_source_block_handler = config.data_source.mapping.block_handlers.clone();
         let data_source_contract_abi = config
             .data_source
             .mapping
@@ -229,9 +233,19 @@ impl RuntimeHost {
             data_source_contract,
             data_source_contract_abi,
             data_source_event_handlers,
+            data_source_call_handlers,
+            data_source_block_handler,
             handle_event_sender,
             _guard: cancel_sender,
         })
+    }
+
+    fn matches_call_address(&self, call: &EthereumCall) -> bool {
+        self.data_source_contract.address == call.to
+    }
+
+    fn matches_call_function(&self, call: &EthereumCall) -> bool {
+        unimplemented!()
     }
 
     fn matches_log_address(&self, log: &Log) -> bool {
@@ -272,6 +286,30 @@ impl RuntimeHost {
 impl RuntimeHostTrait for RuntimeHost {
     fn matches_log(&self, log: &Log) -> bool {
         self.matches_log_address(log) && self.matches_log_signature(log)
+    }
+
+    fn matches_call(&self, call: &EthereumCall) -> bool {
+        self.matches_call_address(call) && self.matches_call_function(call)
+    }
+
+    fn process_call(
+        &self,
+        logger: Logger,
+        block: Arc<EthereumBlock>,
+        transaction: Arc<Transaction>,
+        call: Arc<EthereumCall>,
+        entity_operations: Vec<EntityOperation>,
+    ) -> Box<Future<Item = Vec<EntityOperation>, Error = Error> + Send> {
+        unimplemented!();
+    }
+
+    fn process_block(
+        &self,
+        logger: Logger,
+        block: Arc<EthereumBlock>,
+        entity_operations: Vec<EntityOperation>,
+    ) -> Box<Future<Item = Vec<EntityOperation>, Error = Error> + Send> {
+        unimplemented!();
     }
 
     fn process_log(

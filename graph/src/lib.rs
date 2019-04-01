@@ -62,7 +62,7 @@ pub mod prelude {
         EthereumAdapterError, EthereumBlock, EthereumBlockWithCalls, EthereumBlockWithTriggers,
         EthereumBlockData, EthereumBlockPointer, EthereumEventData, EthereumLogFilter,
         EthereumCallFilter, EthereumBlockFilter, EthereumNetworkIdentifier, EthereumTransactionData,
-        EthereumTrigger,
+        EthereumTrigger, EthereumCall,
     };
     pub use crate::components::graphql::{
         GraphQlRunner, QueryResultFuture, SubscriptionResultFuture,
@@ -95,8 +95,8 @@ pub mod prelude {
     };
     pub use crate::data::subgraph::schema::{SubgraphDeploymentEntity, TypedEntity};
     pub use crate::data::subgraph::{
-        CreateSubgraphResult, DataSource, Link, MappingABI, MappingEventHandler,
-        SubgraphAssignmentProviderError, SubgraphAssignmentProviderEvent, SubgraphDeploymentId,
+        CreateSubgraphResult, DataSource, Link, MappingABI, MappingEventHandler, MappingTransactionHandler,
+        MappingBlockHandler, SubgraphAssignmentProviderError, SubgraphAssignmentProviderEvent, SubgraphDeploymentId, 
         SubgraphManifest, SubgraphManifestResolveError, SubgraphName, SubgraphRegistrarError,
     };
     pub use crate::data::subscription::{

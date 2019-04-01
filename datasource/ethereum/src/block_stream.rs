@@ -2,10 +2,11 @@ use futures::prelude::*;
 use futures::sync::mpsc::{channel, Receiver, Sender};
 use std;
 use std::cmp;
-use std::collections::HashSet;
+use std::collections::{HashSet, HashMap};
 use std::env;
 use std::mem;
 use std::sync::Mutex;
+use std::cmp::Ordering;
 
 use graph::components::forward;
 use graph::data::subgraph::schema::{
@@ -16,6 +17,8 @@ use graph::prelude::{
 };
 use graph::util::ethereum::string_to_h256;
 use graph::web3::types::*;
+
+use tiny_keccak::keccak256;
 
 enum BlockStreamState {
     /// The BlockStream is new and has not yet been polled.
@@ -603,30 +606,20 @@ where
 
                                  Ok(descendant_block)
                              })
-                             .map(move |descendant_block| {
-                                 // Map the descendant block to an `EthereumBlockWithTriggers`
-                                 // To do this we need to scan the entire block for
-                                 // call triggers and block triggers
-                                 
-                                 let log_triggers = parse_log_triggers(
+                             .and_then(move |descendant_block| {
+                                 let triggers = match parse_triggers(
                                      log_filter_opt.clone(),
-                                     &descendant_block.ethereum_block,
-                                 );
-                                 let call_triggers = parse_call_triggers(
                                      call_filter_opt.clone(),
-                                     &descendant_block,
-                                 );
-                                 let block_triggers = parse_block_triggers(
                                      block_filter_opt.clone(),
                                      &descendant_block,
-                                 );
-
-                                 // Order the triggers
-
-                                 EthereumBlockWithTriggers {
+                                 ) {
+                                     Ok(triggers) => triggers,
+                                     Err(err) => return future::err(err)
+                                 };
+                                 future::ok(EthereumBlockWithTriggers {
                                      ethereum_block: descendant_block.ethereum_block,
-                                     triggers: vec![],
-                                 }
+                                     triggers: triggers,
+                                 })
                              })) as Box<Stream<Item = _, Error = _> + Send>,
                 )))
             }
@@ -1233,7 +1226,8 @@ fn create_call_filter_from_subgraph(manifest: &SubgraphManifest) -> Option<Ether
                 .transaction_handlers
                 .iter()
                 .map(move |call_handler| {
-                    (contract_addr, call_handler.function.clone())
+                    let sig = keccak256(call_handler.function.as_bytes());
+                    (contract_addr, [sig[0], sig[1], sig[2], sig[3]])
                 })
         })
         .collect::<EthereumCallFilter>();
@@ -1257,23 +1251,133 @@ fn create_block_filter_from_subgraph(manifest: &SubgraphManifest) -> Option<Ethe
     }
 }
 
+fn parse_triggers(
+    log_filter_opt: Option<EthereumLogFilter>,
+    call_filter_opt: Option<EthereumCallFilter>,
+    block_filter_opt: Option<EthereumBlockFilter>,
+    descendant_block: &EthereumBlockWithCalls,
+) -> Result<Vec<EthereumTrigger>, Error> {
+    let mut triggers = Vec::new();
+    triggers.append(&mut parse_log_triggers(
+        log_filter_opt,
+        &descendant_block.ethereum_block,
+    ));
+    triggers.append(&mut parse_call_triggers(
+        call_filter_opt,
+        descendant_block,
+    ));
+    triggers.append(&mut parse_block_triggers(
+        block_filter_opt,
+        descendant_block,
+    ));
+    let tx_hash_indexes = descendant_block
+        .ethereum_block
+        .transaction_receipts
+        .iter()
+        .map(|receipt| {
+            (receipt.transaction_hash, receipt.transaction_index.as_u64())
+        })
+        .collect::<HashMap<H256, u64>>();
+
+    // Ensure all `Call` and `Log` triggers have a transaction index
+    for trigger in triggers.iter() {
+        match trigger {
+            EthereumTrigger::Log(log) => {
+                if !tx_hash_indexes.get(&log.transaction_hash.unwrap()).is_some() {
+                    return Err(format_err!("Unable to determine transaction index for Ethereum log."))
+                }
+            }
+            EthereumTrigger::Call(call) => {
+                if !tx_hash_indexes.get(&call.transaction_hash.unwrap()).is_some() {
+                    return Err(format_err!("Unable to determine transaction index for Ethereum call."))
+                }
+            }
+            EthereumTrigger::Block => continue,
+        }
+    }
+
+    // Sort the triggers
+    triggers
+        .sort_by(|a, b| {
+            let a_tx_index = a.transaction_index(&tx_hash_indexes).unwrap();
+            let b_tx_index = b.transaction_index(&tx_hash_indexes).unwrap();
+            if a_tx_index.is_none() && b_tx_index.is_none() {
+                return Ordering::Equal
+            }
+            if a_tx_index.is_none() {
+                return Ordering::Less
+            }
+            if b_tx_index.is_none() {
+                return Ordering::Greater
+            }
+            a_tx_index.unwrap().cmp(&b_tx_index.unwrap())
+        });
+
+    Ok(triggers)
+}
+
 fn parse_log_triggers(
     log_filter: Option<EthereumLogFilter>,
     block: &EthereumBlock
 ) -> Vec<EthereumTrigger> {
-    vec![]
+    if log_filter.is_none() {
+        return vec![]
+    }
+    let log_filter = log_filter.unwrap();
+    block
+        .transaction_receipts
+        .iter()
+        .flat_map(move |receipt| {
+            let log_filter = log_filter.clone();
+            receipt
+                .logs
+                .iter()
+                .filter(move |log| {
+                    log_filter.matches(log)
+                })
+                .map(move |log| {
+                    EthereumTrigger::Log(log.clone())
+                })
+        })
+        .collect()
 }
 
 fn parse_call_triggers(
     call_filter: Option<EthereumCallFilter>,
     block: &EthereumBlockWithCalls,
 ) -> Vec<EthereumTrigger> {
-    vec![]
+    if call_filter.is_none() || block.calls.is_none() {
+        return vec![]
+    }
+    let call_filter = call_filter.unwrap();
+    let calls = &block.calls.clone().unwrap();
+    calls
+        .iter()
+        .filter(move |call| {
+            call_filter.matches(call)
+        })
+        .map(move |call| {
+            EthereumTrigger::Call(call.clone())
+        })
+        .collect()
 }
 
 fn parse_block_triggers(
     block_filter: Option<EthereumBlockFilter>,
     block: &EthereumBlockWithCalls,
 ) -> Vec<EthereumTrigger> {
-    vec![]
+    if block_filter.is_none() {
+        return vec![]
+    }
+    let call_filter = EthereumCallFilter::from(block_filter.unwrap());
+    let calls = &block.calls.clone().unwrap();
+    calls
+        .iter()
+        .filter(move |call| {
+            call_filter.matches(call)
+        })
+        .map(move |call| {
+            EthereumTrigger::Block
+        })
+        .collect()
 }
