@@ -1,4 +1,4 @@
-use crate::EventHandlerContext;
+use crate::MappingContext;
 use crate::UnresolvedContractCall;
 use ethabi::Token;
 use futures::sync::oneshot;
@@ -14,7 +14,7 @@ use std::ops::Deref;
 use std::str::FromStr;
 use std::time::{Duration, Instant};
 
-pub(crate) const TIMEOUT_ENV_VAR: &str = "GRAPH_EVENT_HANDLER_TIMEOUT";
+pub(crate) const TIMEOUT_ENV_VAR: &str = "GRAPH_MAPPING_HANDLER_TIMEOUT";
 
 pub(crate) trait ExportError: fmt::Debug + fmt::Display + Send + Sync + 'static {}
 impl<E> ExportError for E where E: fmt::Debug + fmt::Display + Send + Sync + 'static {}
@@ -93,7 +93,7 @@ where
 
     pub(crate) fn store_set(
         &self,
-        ctx: &mut EventHandlerContext,
+        ctx: &mut MappingContext,
         entity_type: String,
         entity_id: String,
         mut data: HashMap<String, Value>,
@@ -124,7 +124,7 @@ where
 
     pub(crate) fn store_remove(
         &self,
-        ctx: &mut EventHandlerContext,
+        ctx: &mut MappingContext,
         entity_type: String,
         entity_id: String,
     ) {
@@ -139,7 +139,7 @@ where
 
     pub(crate) fn store_get(
         &self,
-        ctx: &EventHandlerContext,
+        ctx: &MappingContext,
         entity_type: String,
         entity_id: String,
     ) -> Result<Option<Entity>, HostExportError<impl ExportError>> {
@@ -190,7 +190,7 @@ where
 
     pub(crate) fn ethereum_call(
         &self,
-        ctx: &EventHandlerContext,
+        ctx: &MappingContext,
         unresolved_call: UnresolvedContractCall,
     ) -> Result<Vec<Token>, HostExportError<impl ExportError>> {
         debug!(ctx.logger, "Call smart contract";
@@ -398,13 +398,13 @@ where
         &self,
         start_time: Instant,
     ) -> Result<(), HostExportError<impl ExportError>> {
-        let event_handler_timeout = std::env::var(TIMEOUT_ENV_VAR)
+        let mapping_handler_timeout = std::env::var(TIMEOUT_ENV_VAR)
             .ok()
             .and_then(|s| u64::from_str(&s).ok())
             .map(Duration::from_secs);
-        if let Some(timeout) = event_handler_timeout {
+        if let Some(timeout) = mapping_handler_timeout {
             if start_time.elapsed() > timeout {
-                return Err(HostExportError(format!("Event handler timed out")));
+                return Err(HostExportError(format!("Mapping handler timed out")));
             }
         }
         Ok(())

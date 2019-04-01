@@ -128,7 +128,7 @@ where
                 let matching_hosts: Vec<_> = self
                     .hosts
                     .iter()
-                    .filter(|host| host.matches_block(&block))
+                    .filter(|host| true) // TODO: Actually filter
                     .cloned()
                     .collect();
                 let eops = stream::iter_ok(matching_hosts)

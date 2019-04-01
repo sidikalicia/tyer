@@ -9,12 +9,12 @@ use wasmi::{
 };
 
 use crate::host_exports::{self, HostExportError, HostExports};
-use crate::EventHandlerContext;
+use crate::MappingContext;
 use graph::components::ethereum::*;
 use graph::data::subgraph::DataSource;
-use graph::ethabi::LogParam;
+use graph::ethabi::{LogParam, Param};
 use graph::prelude::{Error as FailureError, *};
-use graph::web3::types::{Log, U256};
+use graph::web3::types::{Log, U256, Transaction};
 
 use crate::asc_abi::asc_ptr::*;
 use crate::asc_abi::class::*;
@@ -137,7 +137,7 @@ pub(crate) struct WasmiModule<'a, T, L, S, U> {
     pub module: ModuleRef,
     memory: MemoryRef,
     host_exports: &'a HostExports<T, L, S, U>,
-    ctx: EventHandlerContext,
+    ctx: MappingContext,
 
     // Time when the current handler began processing.
     start_time: Instant,
@@ -157,7 +157,7 @@ where
     /// Creates a new wasmi module
     pub fn from_valid_module_with_ctx(
         valid_module: &'a ValidModule<T, L, S, U>,
-        ctx: EventHandlerContext,
+        ctx: MappingContext,
     ) -> Result<Self, FailureError> {
         let logger = valid_module.logger.new(o!("component" => "WasmiModule"));
 
@@ -199,9 +199,10 @@ where
         Ok(this)
     }
 
-    pub(crate) fn handle_ethereum_event(
+    pub(crate) fn handle_ethereum_log(
         mut self,
         handler_name: &str,
+        transaction: Arc<Transaction>,
         log: Arc<Log>,
         params: Vec<LogParam>,
     ) -> Result<Vec<EntityOperation>, FailureError> {
@@ -210,7 +211,7 @@ where
         // Prepare an EthereumEvent for the WASM runtime
         let event = EthereumEventData {
             block: EthereumBlockData::from(&self.ctx.block.block),
-            transaction: EthereumTransactionData::from(self.ctx.transaction.deref()),
+            transaction: EthereumTransactionData::from(transaction.deref()),
             address: log.address,
             log_index: log.log_index.unwrap_or(U256::zero()),
             transaction_log_index: log.transaction_log_index.unwrap_or(U256::zero()),
@@ -233,6 +234,26 @@ where
                 e
             )
         })
+    }
+
+    pub(crate) fn handle_ethereum_call(
+        mut self,
+        handler_name: &str,
+        transaction: Arc<Transaction>,
+        call: Arc<EthereumCall>,
+        inputs: Vec<Param>,
+        outputs: Vec<Param>,
+    ) -> Result<Vec<EntityOperation>, FailureError> {
+        self.start_time = Instant::now();
+        unimplemented!()
+    }
+
+    pub(crate) fn handle_ethereum_block(
+        mut self,
+        handler_name: &str,
+    ) -> Result<Vec<EntityOperation>, FailureError> {
+        self.start_time = Instant::now();
+        unimplemented!() 
     }
 }
 

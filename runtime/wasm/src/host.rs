@@ -6,7 +6,7 @@ use std::time::Instant;
 use graph::components::ethereum::*;
 use graph::components::store::Store;
 use graph::data::subgraph::{DataSource, Source};
-use graph::ethabi::LogParam;
+use graph::ethabi::{LogParam, Param};
 use graph::ethabi::RawLog;
 use graph::prelude::{
     RuntimeHost as RuntimeHostTrait, RuntimeHostBuilder as RuntimeHostBuilderTrait, *,
@@ -14,7 +14,7 @@ use graph::prelude::{
 use graph::util;
 use graph::web3::types::{Log, Transaction};
 
-use super::EventHandlerContext;
+use super::MappingContext;
 use crate::module::{ValidModule, WasmiModule, WasmiModuleConfig};
 
 pub struct RuntimeHostConfig {
@@ -86,6 +86,7 @@ where
 }
 
 type HandleEventResponse = Result<Vec<EntityOperation>, Error>;
+type MappingResponse = Result<Vec<EntityOperation>, Error>;
 
 #[derive(Debug)]
 struct HandleEventRequest {
@@ -97,6 +98,35 @@ struct HandleEventRequest {
     params: Vec<LogParam>,
     entity_operations: Vec<EntityOperation>,
     result_sender: oneshot::Sender<HandleEventResponse>,
+}
+
+#[derive(Debug)]
+struct MappingRequest {
+    logger: Logger,
+    block: Arc<EthereumBlock>,
+    entity_operations: Vec<EntityOperation>,
+    trigger: MappingTrigger,
+    result_sender: oneshot::Sender<MappingResponse>,
+}
+
+#[derive(Debug)]
+enum MappingTrigger {
+    Log {
+        transaction: Arc<Transaction>,
+        log: Arc<Log>,
+        params: Vec<LogParam>,
+        handler: MappingEventHandler,
+    },
+    Call {
+        transaction: Arc<Transaction>,
+        call: Arc<EthereumCall>,
+        inputs: Vec<Param>,
+        outputs: Vec<Param>,
+        handler: MappingTransactionHandler,
+    },
+    Block {
+        handler: MappingBlockHandler,
+    },
 }
 
 #[derive(Debug)]
@@ -134,6 +164,7 @@ impl RuntimeHost {
 
         // Create channel for event handling requests
         let (handle_event_sender, handle_event_receiver) = channel(100);
+        let (mapping_request_sender, mapping_request_receiver) = channel(100);
 
         // wasmi modules are not `Send` therefore they cannot be scheduled by
         // the regular tokio executor, so we create a dedicated thread.
@@ -178,8 +209,6 @@ impl RuntimeHost {
         ));
         conf.spawn(move || {
             debug!(module_logger, "Start WASM runtime");
-
-            // Load the mapping of the data source as a WASM module
             let wasmi_config = WasmiModuleConfig {
                 subgraph_id: config.subgraph_id,
                 data_source: config.data_source,
@@ -187,47 +216,63 @@ impl RuntimeHost {
                 link_resolver: link_resolver.clone(),
                 store: store.clone(),
             };
-
-            // Validate the mapping's WASM module
             let valid_module = ValidModule::new(&module_logger, wasmi_config, task_sender)
                 .expect("Failed to validate module");
-
-            // Pass incoming events to the WASM module and send entity changes back;
-            // stop when cancelled from the outside.
+            // Pass incoming triggers to the WASM module and return entity changes;
+            // Stop when cancelled.
             let canceler = cancel_receiver.into_stream();
-            handle_event_receiver
-                .select(canceler.map(|_| panic!("sent to canceler")).map_err(|_| ()))
-                .map_err(|()| err_msg("Canceled"))
-                .for_each(move |request: HandleEventRequest| -> Result<(), Error> {
-                    let HandleEventRequest {
-                        handler,
+            mapping_request_receiver
+                .select(canceler.map(|_| panic!("WASM module thread cancelled")).map_err(|_| ()))
+                .map_err(|()| err_msg("Cancelled"))
+                .for_each(move |request: MappingRequest| -> Result<(), Error> {
+                    let MappingRequest {
                         logger,
                         block,
-                        transaction,
-                        log,
-                        params,
                         entity_operations,
+                        trigger,
                         result_sender,
                     } = request;
-
-                    let ctx = EventHandlerContext {
+                    let ctx = MappingContext {
                         logger,
                         block,
-                        transaction,
                         entity_operations,
                     };
-
-                    let result = WasmiModule::from_valid_module_with_ctx(&valid_module, ctx)?
-                        .handle_ethereum_event(handler.handler.as_str(), log, params);
+                    let module = WasmiModule::from_valid_module_with_ctx(&valid_module, ctx)?;
+                    let result = match trigger {
+                        MappingTrigger::Log {
+                            transaction, log, params, handler,
+                        } => {
+                            module.handle_ethereum_log(
+                                handler.handler.as_str(),
+                                transaction,
+                                log,
+                                params,
+                            )
+                        }
+                        MappingTrigger::Call {
+                            transaction, call, inputs, outputs, handler,
+                        } => {
+                            module.handle_ethereum_call(
+                                handler.handler.as_str(),
+                                transaction,
+                                call,
+                                inputs,
+                                outputs,
+                            )
+                        }
+                        MappingTrigger::Block { handler } => {
+                            module.handle_ethereum_block(
+                                handler.handler.as_str(),
+                            )
+                        }
+                    };
                     result_sender
                         .send(result)
-                        .map_err(|_| err_msg("receiver dropped"))
+                        .map_err(|_| err_msg("WASM module result receiver dropped."))
                 })
                 .wait()
                 .ok();
-        })
-        .expect("failed to spawn runtime thread");
-
+        }).expect("Spawning WASM runtime thread failed.");
         Ok(RuntimeHost {
             data_source_name,
             data_source_contract,
