@@ -1,5 +1,3 @@
-use futures::sync::mpsc::{channel, Sender};
-use futures::sync::oneshot;
 use std::thread;
 use std::time::Instant;
 
@@ -13,9 +11,12 @@ use graph::prelude::{
 };
 use graph::util;
 use graph::web3::types::{Log, Transaction};
-
 use super::MappingContext;
 use crate::module::{ValidModule, WasmiModule, WasmiModuleConfig};
+
+use futures::sync::mpsc::{channel, Sender};
+use futures::sync::oneshot;
+use tiny_keccak::keccak256;
 
 pub struct RuntimeHostConfig {
     subgraph_id: SubgraphDeploymentId,
@@ -297,10 +298,9 @@ impl RuntimeHost {
     fn event_handler_for_log(&self, log: &Arc<Log>) -> Result<MappingEventHandler, Error> {
         // Get signature from the log
         if log.topics.is_empty() {
-            return Err(format_err!("Ethereum event has no topics"));
+            return Err(format_err!("Ethereum event has no topics"))
         }
         let signature = log.topics[0];
-
         self.data_source_event_handlers
             .iter()
             .find(|handler| signature == util::ethereum::string_to_h256(handler.event.as_str()))
@@ -308,6 +308,28 @@ impl RuntimeHost {
             .ok_or_else(|| {
                 format_err!(
                     "No event handler found for event in data source \"{}\"",
+                    self.data_source_name,
+                )
+            })
+    }
+
+    fn call_handler_for_call(&self, call: &Arc<EthereumCall>) -> Result<MappingTransactionHandler, Error> {
+        // First four bytes of the input for the call are the first four bytes of hash of the function signature
+        if call.input.0.len() < 4 {
+            return Err(format_err!("Ethereum call has input with less than 4 bytes"))
+        }
+        let target_signature = &call.input.0[..4];
+        self.data_source_call_handlers
+            .iter()
+            .find(move |handler| {
+                let signature_hash = keccak256(handler.function.as_bytes());
+                let actual_signature = [signature_hash[0], signature_hash[1], signature_hash[2], signature_hash[3]];
+                target_signature == actual_signature
+            })
+            .cloned()
+            .ok_or_else(|| {
+                format_err!(
+                    "No call handler found for call in data source \"{}\"",
                     self.data_source_name,
                 )
             })
@@ -331,6 +353,15 @@ impl RuntimeHostTrait for RuntimeHost {
         call: Arc<EthereumCall>,
         entity_operations: Vec<EntityOperation>,
     ) -> Box<Future<Item = Vec<EntityOperation>, Error = Error> + Send> {
+        // Identify the call handler for this call
+        let call_handler = match self.call_handler_for_call(&call) {
+            Ok(handler) => handler,
+            Err(e) => return Box::new(future::err(e)),
+        };
+
+        // Identify the function ABI in the contract
+
+        
         unimplemented!();
     }
 
