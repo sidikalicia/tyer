@@ -124,7 +124,7 @@ pub struct RuntimeHost {
     data_source_contract_abi: MappingABI,
     data_source_event_handlers: Vec<MappingEventHandler>,
     data_source_call_handlers: Vec<MappingTransactionHandler>,
-    data_source_block_handler: MappingBlockHandler,
+    data_source_block_handler: Option<MappingBlockHandler>,
     mapping_request_sender: Sender<MappingRequest>,
     _guard: oneshot::Sender<()>,
 }

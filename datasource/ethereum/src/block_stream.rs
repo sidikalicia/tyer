@@ -1241,6 +1241,12 @@ fn create_block_filter_from_subgraph(manifest: &SubgraphManifest) -> Option<Ethe
     let block_filter = manifest
         .data_sources
         .iter()
+        .filter(|data_source| {
+            data_source
+                .mapping
+                .block_handlers
+                .is_some()
+        })
         .map(|data_source| {
             data_source.source.address
         })
