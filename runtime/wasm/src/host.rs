@@ -352,6 +352,10 @@ impl RuntimeHostTrait for RuntimeHost {
         self.matches_call_address(call) && self.matches_call_function(call)
     }
 
+    fn matches_block(&self, call: &EthereumBlock) -> bool {
+        self.data_source_block_handler.is_some()
+    }
+
     fn process_call(
         &self,
         logger: Logger,
