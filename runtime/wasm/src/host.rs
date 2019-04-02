@@ -167,7 +167,7 @@ impl RuntimeHost {
         let data_source_contract = config.data_source.source.clone();
         let data_source_event_handlers = config.data_source.mapping.event_handlers.clone();
         let data_source_call_handlers = config.data_source.mapping.transaction_handlers.clone();
-        let data_source_block_handler = config.data_source.mapping.block_handlers.clone();
+        let data_source_block_handler = config.data_source.mapping.block_handler.clone();
         let data_source_contract_abi = config
             .data_source
             .mapping

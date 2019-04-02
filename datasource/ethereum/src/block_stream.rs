@@ -1244,7 +1244,7 @@ fn create_block_filter_from_subgraph(manifest: &SubgraphManifest) -> Option<Ethe
         .filter(|data_source| {
             data_source
                 .mapping
-                .block_handlers
+                .block_handler
                 .is_some()
         })
         .map(|data_source| {
