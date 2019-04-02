@@ -28,12 +28,23 @@ pub fn contract_event_with_signature<'a>(
 
 pub fn contract_function_with_signature<'a>(
     contract: &'a Contract,
-    signature: &str,
+    target_signature: &str,
 ) -> Option<&'a Function> {
     contract
         .functions()
-    // TODO: Understand what `function.name` is.
-    // Is it a the full signature or just the name?
-    // If it is just the name then we need to adjust the equality check.
-        .find(|function| !function.constant && function.name == signature.to_string())
+        .find(|function| {
+            // Construct the argument function signature:
+            // `address,uint256,bool`
+            let mut arguments = function
+                .inputs
+                .iter()
+                .map(|input| format!("{}", input.kind))
+                .collect::<Vec<String>>()
+                .join(",");
+            // `address,uint256,bool)
+            arguments.push_str(")");
+            // `operation(address,uint256,bool)`
+            let actual_signature = vec![function.name.clone(), arguments].join("(");
+            !function.constant && target_signature == actual_signature
+        })
 }

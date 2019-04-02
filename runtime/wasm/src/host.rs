@@ -388,13 +388,66 @@ impl RuntimeHostTrait for RuntimeHost {
         // Take the input for the call, chop off the first 4 bytes, then call `function.decode_output` to
         // get a vector of `Token`s. Match the `Token`s with the `Param`s in `function.inputs` to
         // create a `Vec<LogParam>`.
-        //
+        let inputs = match function_abi
+            .decode_output(&call.input.0[4..])
+            .map_err(|err| {
+                format_err!(
+                    "Generating function inputs for an Ethereum call failed = {}",
+                    err,
+                )
+            })            
+            .and_then(|tokens| {
+                if tokens.len() != function_abi.inputs.len() {
+                    return Err(format_err!(
+                        "Number of arguments in call does not match number of inputs in function signature."
+                    ))
+                }
+                let inputs = tokens
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, token)| LogParam {
+                        name: function_abi.inputs[i].name.clone(),
+                        value: token,
+                    })
+                    .collect::<Vec<LogParam>>();
+                Ok(inputs)
+            }) {
+                Ok(params) => params,
+                Err(e) => return Box::new(future::err(e))
+            };
+        
         // Parse the outputs
         //
         // Take the ouput for the call, then call `function.decode_output` to get a vector of `Token`s.
         // Match the `Token`s with the `Param`s in `function.outputs` to create a `Vec<LogParam>`.
-        let inputs = vec![];
-        let outputs = vec![];
+        let outputs = match function_abi
+            .decode_output(&call.output.0)
+            .map_err(|err| {
+                format_err!(
+                    "Generating function outputs for an Ethereum call failed = {}",
+                    err,
+                )
+            })
+            .and_then(|tokens| {
+                if tokens.len() != function_abi.outputs.len() {
+                    return Err(format_err!(
+                        "Number of paramters in the call output does not match number of outputs in the function signature."
+                    ))
+                }
+                let outputs = tokens
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, token)| LogParam {
+                        name: function_abi.outputs[i].name.clone(),
+                        value: token,
+                    })
+                    .collect::<Vec<LogParam>>();
+                Ok(outputs)
+            }) {
+                Ok(outputs) => outputs,
+                Err(e) => return Box::new(future::err(e))
+            };
+
 
         // Execute the call handler and asynchronously wait for the result
         let (result_sender, result_receiver) = oneshot::channel();
