@@ -1,4 +1,4 @@
-use ethabi::{Contract, Event};
+use ethabi::{Contract, Event, Function};
 use tiny_keccak::Keccak;
 use web3::types::H256;
 
@@ -24,4 +24,16 @@ pub fn contract_event_with_signature<'a>(
     contract
         .events()
         .find(|event| event.signature() == string_to_h256(signature))
+}
+
+pub fn contract_function_with_signature<'a>(
+    contract: &'a Contract,
+    signature: &str,
+) -> Option<&'a Function> {
+    contract
+        .functions()
+    // TODO: Understand what `function.name` is.
+    // Is it a the full signature or just the name?
+    // If it is just the name then we need to adjust the equality check.
+        .find(|function| !function.constant && function.name == signature.to_string())
 }

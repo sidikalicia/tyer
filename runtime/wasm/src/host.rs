@@ -277,7 +277,14 @@ impl RuntimeHost {
     }
 
     fn matches_call_function(&self, call: &EthereumCall) -> bool {
-        unimplemented!()
+        let target_method_id = &call.input.0[..4];
+        self.data_source_call_handlers
+            .iter()
+            .any(|handler| {
+                let fhash = keccak256(handler.function.as_bytes());
+                let actual_method_id = [fhash[0], fhash[1], fhash[2], fhash[3]];
+                target_method_id == actual_method_id
+            })
     }
 
     fn matches_log_address(&self, log: &Log) -> bool {
@@ -318,13 +325,13 @@ impl RuntimeHost {
         if call.input.0.len() < 4 {
             return Err(format_err!("Ethereum call has input with less than 4 bytes"))
         }
-        let target_signature = &call.input.0[..4];
+        let target_method_id = &call.input.0[..4];
         self.data_source_call_handlers
             .iter()
             .find(move |handler| {
-                let signature_hash = keccak256(handler.function.as_bytes());
-                let actual_signature = [signature_hash[0], signature_hash[1], signature_hash[2], signature_hash[3]];
-                target_signature == actual_signature
+                let fhash = keccak256(handler.function.as_bytes());
+                let actual_method_id = [fhash[0], fhash[1], fhash[2], fhash[3]];
+                target_method_id == actual_method_id
             })
             .cloned()
             .ok_or_else(|| {
@@ -360,11 +367,75 @@ impl RuntimeHostTrait for RuntimeHost {
         };
 
         // Identify the function ABI in the contract
+        let function_abi = match util::ethereum::contract_function_with_signature(
+            &self.data_source_contract_abi.contract,
+            call_handler.function.as_str(),
+        ) {
+            Some(function_abi) => function_abi,
+            None => {
+                return Box::new(future::err(format_err!(
+                    "Function with the signature \"{}\" not found in \
+                     contract \"{}\" of data source \"{}\"",
+                    call_handler.function,
+                    self.data_source_contract_abi.name,
+                    self.data_source_name
+                )));
+            }
+        };
 
-        // Parse the inputs and outputs
+        // Parse the inputs
+        //
+        // Take the input for the call, chop off the first 4 bytes, then call `function.decode_output` to
+        // get a vector of `Token`s. Match the `Token`s with the `Param`s in `function.inputs` to
+        // create a `Vec<LogParam>`.
+        //
+        // Parse the outputs
+        //
+        // Take the ouput for the call, then call `function.decode_output` to get a vector of `Token`s.
+        // Match the `Token`s with the `Param`s in `function.outputs` to create a `Vec<LogParam>`.
+        let inputs = vec![];
+        let outputs = vec![];
 
-        
-        unimplemented!();
+        // Execute the call handler and asynchronously wait for the result
+        let (result_sender, result_receiver) = oneshot::channel();
+        let start_time = Instant::now();
+        let eops = self.mapping_request_sender
+            .clone()
+            .send(MappingRequest {
+                logger: logger.clone(),
+                block: block.clone(),
+                trigger: MappingTrigger::Call {
+                    transaction: transaction.clone(),
+                    call: call.clone(),
+                    inputs,
+                    outputs,
+                    handler: call_handler.clone(),
+                },
+                entity_operations,
+                result_sender,
+            })
+            .map_err(move |_| {
+                format_err!(
+                    "Mapping terminated before passing in Ethereum call",
+                )
+            })
+            .and_then(|_| {
+                result_receiver.map_err(move |_| {
+                    format_err!(
+                        "Mapping terminated before finishing to handle",
+                    )
+                })
+            })
+            .and_then(move |result| {
+                info!(
+                    logger, "Done processing Ethereum call";
+                    // Replace this when `as_millis` is stable.
+                    "secs" => start_time.elapsed().as_secs(),
+                    "ms" => start_time.elapsed().subsec_millis()
+                );
+                result
+            });
+        Box::new(eops)
     }
 
     fn process_block(
