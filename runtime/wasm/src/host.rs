@@ -361,6 +361,8 @@ impl RuntimeHostTrait for RuntimeHost {
 
         // Identify the function ABI in the contract
 
+        // Parse the inputs and outputs
+
         
         unimplemented!();
     }
@@ -433,47 +435,46 @@ impl RuntimeHostTrait for RuntimeHost {
         let event_signature = event_handler.event.clone();
         let start_time = Instant::now();
 
-        Box::new(
-            self.mapping_request_sender
-                .clone()
-                .send(MappingRequest {
-                    logger: logger.clone(),
-                    block: block.clone(),
-                    trigger: MappingTrigger::Log {
-                        transaction: transaction.clone(),
-                        log: log.clone(),
-                        params,
-                        handler: event_handler.clone(),
-                    },
-                    entity_operations,
-                    result_sender,
-                })
-                .map_err(move |_| {
+        let eops = self.mapping_request_sender
+            .clone()
+            .send(MappingRequest {
+                logger: logger.clone(),
+                block: block.clone(),
+                trigger: MappingTrigger::Log {
+                    transaction: transaction.clone(),
+                    log: log.clone(),
+                    params,
+                    handler: event_handler.clone(),
+                },
+                entity_operations,
+                result_sender,
+            })
+            .map_err(move |_| {
+                format_err!(
+                    "Mapping terminated before passing in Ethereum event: {}",
+                    before_event_signature
+                )
+            })
+            .and_then(|_| {
+                result_receiver.map_err(move |_| {
                     format_err!(
-                        "Mapping terminated before passing in Ethereum event: {}",
-                        before_event_signature
+                        "Mapping terminated before finishing to handle \
+                         Ethereum event: {}",
+                        event_signature,
                     )
                 })
-                .and_then(|_| {
-                    result_receiver.map_err(move |_| {
-                        format_err!(
-                            "Mapping terminated before finishing to handle \
-                             Ethereum event: {}",
-                            event_signature,
-                        )
-                    })
-                })
-                .and_then(move |result| {
-                    info!(
-                        logger, "Done processing Ethereum event";
-                        "signature" => &event_handler.event,
-                        "handler" => &event_handler.handler,
-                        // Replace this when `as_millis` is stable.
-                        "secs" => start_time.elapsed().as_secs(),
-                        "ms" => start_time.elapsed().subsec_millis()
-                    );
-                    result
-                }),
-        )
+            })
+            .and_then(move |result| {
+                info!(
+                    logger, "Done processing Ethereum event";
+                    "signature" => &event_handler.event,
+                    "handler" => &event_handler.handler,
+                    // Replace this when `as_millis` is stable.
+                    "secs" => start_time.elapsed().as_secs(),
+                    "ms" => start_time.elapsed().subsec_millis()
+                );
+                result
+            });
+        Box::new(eops)
     }
 }

@@ -170,7 +170,7 @@ impl FromIterator<(Address, [u8; 4])> for EthereumCallFilter {
     {
         let mut lookup: HashMap<Address, HashSet<[u8; 4]>> = HashMap::new();
         iter.into_iter().for_each(|(address, function_signature)| {
-            if lookup.contains_key(&address) {
+            if !lookup.contains_key(&address) {
                 lookup.insert(address, HashSet::default());
             }
             lookup.get_mut(&address).map(|set| {
