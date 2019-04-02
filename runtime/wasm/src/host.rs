@@ -85,27 +85,14 @@ where
     }
 }
 
-type HandleEventResponse = Result<Vec<EntityOperation>, Error>;
 type MappingResponse = Result<Vec<EntityOperation>, Error>;
-
-#[derive(Debug)]
-struct HandleEventRequest {
-    handler: MappingEventHandler,
-    logger: Logger,
-    block: Arc<EthereumBlock>,
-    transaction: Arc<Transaction>,
-    log: Arc<Log>,
-    params: Vec<LogParam>,
-    entity_operations: Vec<EntityOperation>,
-    result_sender: oneshot::Sender<HandleEventResponse>,
-}
 
 #[derive(Debug)]
 struct MappingRequest {
     logger: Logger,
     block: Arc<EthereumBlock>,
-    entity_operations: Vec<EntityOperation>,
     trigger: MappingTrigger,
+    entity_operations: Vec<EntityOperation>,
     result_sender: oneshot::Sender<MappingResponse>,
 }
 
@@ -120,8 +107,8 @@ enum MappingTrigger {
     Call {
         transaction: Arc<Transaction>,
         call: Arc<EthereumCall>,
-        inputs: Vec<Param>,
-        outputs: Vec<Param>,
+        inputs: Vec<LogParam>,
+        outputs: Vec<LogParam>,
         handler: MappingTransactionHandler,
     },
     Block {
@@ -137,7 +124,7 @@ pub struct RuntimeHost {
     data_source_event_handlers: Vec<MappingEventHandler>,
     data_source_call_handlers: Vec<MappingTransactionHandler>,
     data_source_block_handler: MappingBlockHandler,
-    handle_event_sender: Sender<HandleEventRequest>,
+    handle_event_sender: Sender<MappingRequest>,
     _guard: oneshot::Sender<()>,
 }
 
@@ -419,13 +406,15 @@ impl RuntimeHostTrait for RuntimeHost {
         Box::new(
             self.handle_event_sender
                 .clone()
-                .send(HandleEventRequest {
-                    handler: event_handler.clone(),
+                .send(MappingRequest {
                     logger: logger.clone(),
                     block: block.clone(),
-                    transaction: transaction.clone(),
-                    log: log.clone(),
-                    params,
+                    trigger: MappingTrigger::Log {
+                        transaction: transaction.clone(),
+                        log: log.clone(),
+                        params,
+                        handler: event_handler.clone(),
+                    },
                     entity_operations,
                     result_sender,
                 })
