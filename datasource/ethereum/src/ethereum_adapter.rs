@@ -58,7 +58,6 @@ where
             .no_limit()
             .timeout_secs(60)
             .run(move || {
-                // TODO: What happens if `addresses` is an empty array?
                 let trace_filter: TraceFilter = match addresses.len() {
                     0 => {
                         TraceFilterBuilder::default()
