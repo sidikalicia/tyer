@@ -772,8 +772,7 @@ where
                     0 => vec![],
                     _ => {
                         let logs: Vec<Log> = log_chunks
-                            .iter()
-                            .map(|log_chunk| log_chunk.clone())
+                            .into_iter()
                             .flatten()
                             .collect();
                         let mut block_ptrs = vec![];
