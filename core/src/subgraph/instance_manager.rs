@@ -198,10 +198,7 @@ impl SubgraphInstanceManager {
                     let block_for_transact = block_for_process.clone();
                     let logger_for_process = logger;
                     let logger_for_transact = logger_for_process.clone();
-                    // TODO: The stream should be over the triggers in the block yielded
-                    // Match the trigger and call the `SubgraphInstance::process_<trigger_type>` method
                     stream::iter_ok::<_, CancelableError<Error>>(triggers)
-                        // TODO: Understand why the return type needs to be specified to get it to compile
                         .fold(vec![], move |entity_operations, trigger| {
                             let logger = logger_for_process.clone();
                             let instance = instance.clone();
