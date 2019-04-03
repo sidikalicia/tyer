@@ -177,21 +177,19 @@ impl SubgraphInstanceManager {
                         "block_number" => format!("{:?}", block.block.number.unwrap()),
                         "block_hash" => format!("{:?}", block.block.hash.unwrap())
                     ));
-
-
-                    // TODO: Check the triggers instead of the logs
+                    
                     if triggers.len() == 0 {
-                        debug!(logger, "No events found in this block for this subgraph");
+                        debug!(logger, "No triggers found in this block for this subgraph");
                     } else if triggers.len() == 1 {
-                        info!(logger, "1 event found in this block for this subgraph");
+                        info!(logger, "1 trigger found in this block for this subgraph");
                     } else {
                         info!(
                             logger,
-                            "{} events found in this block for this subgraph",
+                            "{} trigger found in this block for this subgraph",
                             triggers.len()
                         );
                     }
-
+                    
                     // Process events one after the other, passing in entity operations
                     // collected previously to every new event being processed
                     let block_for_process = Arc::new(block);
