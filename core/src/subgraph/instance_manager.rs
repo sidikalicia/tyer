@@ -206,7 +206,9 @@ impl SubgraphInstanceManager {
                                 block,
                                 trigger,
                                 entity_operations
-                            )
+                            ).map_err(|e| {
+                                format_err!("Failed to process trigger: {}", e)
+                            })
                         })
                         .and_then(move |entity_operations| {
                             let block = block_for_transact.clone();
