@@ -269,7 +269,7 @@ where
         handler_name: &str,
     ) -> Result<Vec<EntityOperation>, FailureError> {
         self.start_time = Instant::now();
-        // Prepare an EthereumBLock for the WASM runtime
+        // Prepare an EthereumBlock for the WASM runtime
         let arg = EthereumBlockData::from(&self.ctx.block.block);
         let result = self.module.clone().invoke_export(
             handler_name,
