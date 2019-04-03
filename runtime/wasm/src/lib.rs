@@ -29,14 +29,6 @@ pub(crate) struct UnresolvedContractCall {
     pub function_args: Vec<ethabi::Token>,
 }
 
-// #[derive(Debug)]
-// pub(crate) struct EventHandlerContext {
-//     logger: Logger,
-//     block: Arc<EthereumBlock>,
-//     transaction: Arc<Transaction>,
-//     entity_operations: Vec<EntityOperation>,
-// }
-
 #[derive(Debug)]
 pub(crate) struct MappingContext {
     logger: Logger,
