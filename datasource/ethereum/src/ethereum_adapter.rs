@@ -695,7 +695,7 @@ where
         if block_filter_opt.is_some() {
             let block_filter = block_filter_opt.unwrap();
             match block_filter.contract_addresses.len() {
-                0 => block_futs.push(Box::new(eth.blocks(&logger, from, to))),
+                0 => (),
                 _ => {
                     let call_filter = EthereumCallFilter::from(block_filter);
                     block_futs.push(Box::new(eth.blocks_with_calls(&logger, from, to, call_filter)));

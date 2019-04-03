@@ -302,7 +302,7 @@ impl RuntimeHost {
         })
     }
 
-    fn event_handler_for_log(&self, log: &Arc<Log>) -> Result<MappingEventHandler, Error> {
+    fn handler_for_log(&self, log: &Arc<Log>) -> Result<MappingEventHandler, Error> {
         // Get signature from the log
         if log.topics.is_empty() {
             return Err(format_err!("Ethereum event has no topics"))
@@ -320,7 +320,7 @@ impl RuntimeHost {
             })
     }
 
-    fn call_handler_for_call(&self, call: &Arc<EthereumCall>) -> Result<MappingTransactionHandler, Error> {
+    fn handler_for_call(&self, call: &Arc<EthereumCall>) -> Result<MappingTransactionHandler, Error> {
         // First four bytes of the input for the call are the first four bytes of hash of the function signature
         if call.input.0.len() < 4 {
             return Err(format_err!("Ethereum call has input with less than 4 bytes"))
@@ -341,6 +341,18 @@ impl RuntimeHost {
                 )
             })
     }
+
+    fn handler_for_block(&self) -> Result<MappingBlockHandler, Error> {
+        self
+            .data_source_block_handler
+            .clone()
+            .ok_or_else(|| {
+                format_err!(
+                    "RuntimeHost does not have a block handler in data source \"{}\"",
+                    self.data_source_name,
+                )
+            })
+    }
 }
 
 impl RuntimeHostTrait for RuntimeHost {
@@ -352,8 +364,8 @@ impl RuntimeHostTrait for RuntimeHost {
         self.matches_call_address(call) && self.matches_call_function(call)
     }
 
-    fn matches_block(&self, call: &EthereumBlock) -> bool {
-        self.data_source_block_handler.is_some()
+    fn matches_block(&self, block: &EthereumBlock, call: &EthereumCall) -> bool {
+        self.data_source_block_handler.is_some() && self.matches_call_address(call)
     }
 
     fn process_call(
@@ -365,7 +377,7 @@ impl RuntimeHostTrait for RuntimeHost {
         entity_operations: Vec<EntityOperation>,
     ) -> Box<Future<Item = Vec<EntityOperation>, Error = Error> + Send> {
         // Identify the call handler for this call
-        let call_handler = match self.call_handler_for_call(&call) {
+        let call_handler = match self.handler_for_call(&call) {
             Ok(handler) => handler,
             Err(e) => return Box::new(future::err(e)),
         };
@@ -501,7 +513,47 @@ impl RuntimeHostTrait for RuntimeHost {
         block: Arc<EthereumBlock>,
         entity_operations: Vec<EntityOperation>,
     ) -> Box<Future<Item = Vec<EntityOperation>, Error = Error> + Send> {
-        unimplemented!();
+        let block_handler = match self.handler_for_block() {
+            Ok(handler) => handler,
+            Err(e) => return Box::new(future::err(e)),
+        };
+
+        // Execute the call handler and asynchronously wait for the result
+        let (result_sender, result_receiver) = oneshot::channel();
+        let start_time = Instant::now();
+        let eops = self.mapping_request_sender
+            .clone()
+            .send(MappingRequest {
+                logger: logger.clone(),
+                block: block.clone(),
+                trigger: MappingTrigger::Block {
+                    handler: block_handler.clone(),
+                },
+                entity_operations,
+                result_sender,
+            })
+            .map_err(move |_| {
+                format_err!(
+                    "Mapping terminated before passing in Ethereum block",
+                )
+            })
+            .and_then(|_| {
+                result_receiver.map_err(move |_| {
+                    format_err!(
+                        "Mapping terminated before finishing to handle",
+                    )
+                })
+            })
+            .and_then(move |result| {
+                info!(
+                    logger, "Done processing Ethereum block";
+                    // Replace this when `as_millis` is stable.
+                    "secs" => start_time.elapsed().as_secs(),
+                    "ms" => start_time.elapsed().subsec_millis()
+                );
+                result
+            });
+        Box::new(eops)
     }
 
     fn process_log(
@@ -513,7 +565,7 @@ impl RuntimeHostTrait for RuntimeHost {
         entity_operations: Vec<EntityOperation>,
     ) -> Box<Future<Item = Vec<EntityOperation>, Error = Error> + Send> {
         // Identify event handler for this log
-        let event_handler = match self.event_handler_for_log(&log) {
+        let event_handler = match self.handler_for_log(&log) {
             Ok(handler) => handler,
             Err(e) => return Box::new(future::err(e)),
         };

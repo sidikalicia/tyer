@@ -124,11 +124,11 @@ where
                     });
                 Box::new(eops)
             },
-            EthereumTrigger::Block => {
+            EthereumTrigger::Block(call) => {
                 let matching_hosts: Vec<_> = self
                     .hosts
                     .iter()
-                    .filter(|host| true) // TODO: Actually filter
+                    .filter(|host| host.matches_block(&block, &call))
                     .cloned()
                     .collect();
                 let eops = stream::iter_ok(matching_hosts)
