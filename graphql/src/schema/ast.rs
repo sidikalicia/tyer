@@ -1,12 +1,12 @@
-use failure::Error;
-use graphql_parser::schema::*;
+use graphql_parser::schema::{Value, *};
 use graphql_parser::Pos;
 use lazy_static::lazy_static;
 use std::ops::Deref;
 use std::str::FromStr;
 
 use crate::execution::ObjectOrInterface;
-use graph::prelude::ValueType;
+use crate::query::ast as qast;
+use graph::prelude::*;
 
 pub(crate) enum FilterOp {
     Not,
@@ -433,4 +433,26 @@ pub fn get_input_object_definitions(schema: &Document) -> Vec<InputObjectType> {
             _ => None,
         })
         .collect()
+}
+
+/// If the field has a `@derivedFrom(field: "foo")` directive, obtain the
+/// name of the field (e.g. `"foo"`)
+fn get_derived_from_directive<'a>(field_definition: &Field) -> Option<&Directive> {
+    field_definition
+        .directives
+        .iter()
+        .find(|directive| directive.name == Name::from("derivedFrom"))
+}
+
+pub fn get_derived_from_field<'a>(
+    object_type: impl Into<ObjectOrInterface<'a>>,
+    field_definition: &'a Field,
+) -> Option<&'a Field> {
+    get_derived_from_directive(field_definition)
+        .and_then(|directive| qast::get_argument_value(&directive.arguments, &Name::from("field")))
+        .and_then(|value| match value {
+            Value::String(s) => Some(s),
+            _ => None,
+        })
+        .and_then(|derived_from_field_name| get_field_type(object_type, derived_from_field_name))
 }

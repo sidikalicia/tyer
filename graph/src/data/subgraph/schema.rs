@@ -102,40 +102,28 @@ impl SubgraphEntity {
         id: &str,
         version_id_opt: Option<String>,
     ) -> Vec<EntityOperation> {
-        let mut ops = vec![];
-
-        ops.push(EntityOperation::AbortUnless {
-            description: "Subgraph entity must still exist to be updated".to_owned(),
-            query: Self::query().filter(EntityFilter::new_equal("id", id)),
-            entity_ids: vec![id.to_owned()],
-        });
-
         let mut entity = Entity::new();
-        entity.set("id", id);
         entity.set("currentVersion", version_id_opt);
-        ops.push(set_entity_operation(Self::TYPENAME, id, entity));
 
-        ops
+        vec![EntityOperation::Update {
+            key: Self::key(id.to_owned()),
+            data: entity,
+            guard: None,
+        }]
     }
 
     pub fn update_pending_version_operations(
         id: &str,
         version_id_opt: Option<String>,
     ) -> Vec<EntityOperation> {
-        let mut ops = vec![];
-
-        ops.push(EntityOperation::AbortUnless {
-            description: "Subgraph entity must still exist to be updated".to_owned(),
-            query: Self::query().filter(EntityFilter::new_equal("id", id)),
-            entity_ids: vec![id.to_owned()],
-        });
-
         let mut entity = Entity::new();
-        entity.set("id", id);
         entity.set("pendingVersion", version_id_opt);
-        ops.push(set_entity_operation(Self::TYPENAME, id, entity));
 
-        ops
+        vec![EntityOperation::Update {
+            key: Self::key(id.to_owned()),
+            data: entity,
+            guard: None,
+        }]
     }
 }
 
@@ -253,94 +241,61 @@ impl SubgraphDeploymentEntity {
         block_ptr_from: EthereumBlockPointer,
         block_ptr_to: EthereumBlockPointer,
     ) -> Vec<EntityOperation> {
-        let mut ops = vec![];
-
-        ops.push(EntityOperation::AbortUnless {
-            description: "Subgraph's Ethereum block pointer must match block_ptr_from".to_owned(),
-            query: Self::query().filter(EntityFilter::And(vec![
-                EntityFilter::new_equal("id", id.to_string()),
-                EntityFilter::new_equal("latestEthereumBlockHash", block_ptr_from.hash_hex()),
-                EntityFilter::new_equal("latestEthereumBlockNumber", block_ptr_from.number),
-            ])),
-            entity_ids: vec![id.to_string()],
-        });
-
         let mut entity = Entity::new();
-        entity.set("id", id.to_string());
         entity.set("latestEthereumBlockHash", block_ptr_to.hash_hex());
         entity.set("latestEthereumBlockNumber", block_ptr_to.number);
-        ops.push(set_entity_operation(Self::TYPENAME, id.to_string(), entity));
 
-        ops
+        let guard = EntityFilter::And(vec![
+            EntityFilter::new_equal("latestEthereumBlockHash", block_ptr_from.hash_hex()),
+            EntityFilter::new_equal("latestEthereumBlockNumber", block_ptr_from.number),
+        ]);
+        vec![EntityOperation::Update {
+            key: Self::key(id.clone()),
+            data: entity,
+            guard: Some(guard),
+        }]
     }
 
     pub fn update_ethereum_blocks_count_operations(
         id: &SubgraphDeploymentId,
         total_blocks_count: u64,
     ) -> Vec<EntityOperation> {
-        let mut ops = vec![];
-
-        ops.push(EntityOperation::AbortUnless {
-            description: "Subgraph deployment entity must exist to be updated".to_owned(),
-            query: Self::query().filter(EntityFilter::And(vec![EntityFilter::new_equal(
-                "id",
-                id.to_string(),
-            )])),
-            entity_ids: vec![id.to_string()],
-        });
-
         let mut entity = Entity::new();
-        entity.set("id", id.to_string());
         entity.set("totalEthereumBlocksCount", total_blocks_count);
-        ops.push(set_entity_operation(Self::TYPENAME, id.to_string(), entity));
 
-        ops
+        vec![EntityOperation::Update {
+            key: Self::key(id.clone()),
+            data: entity,
+            guard: None,
+        }]
     }
 
     pub fn update_failed_operations(
         id: &SubgraphDeploymentId,
         failed: bool,
     ) -> Vec<EntityOperation> {
-        let mut ops = vec![];
-
-        ops.push(EntityOperation::AbortUnless {
-            description: "Subgraph deployment entity must exist to be updated".to_owned(),
-            query: Self::query().filter(EntityFilter::And(vec![EntityFilter::new_equal(
-                "id",
-                id.to_string(),
-            )])),
-            entity_ids: vec![id.to_string()],
-        });
-
         let mut entity = Entity::new();
-        entity.set("id", id.to_string());
         entity.set("failed", failed);
-        ops.push(set_entity_operation(Self::TYPENAME, id.to_string(), entity));
 
-        ops
+        vec![EntityOperation::Update {
+            key: Self::key(id.clone()),
+            data: entity,
+            guard: None,
+        }]
     }
 
     pub fn update_synced_operations(
         id: &SubgraphDeploymentId,
         synced: bool,
     ) -> Vec<EntityOperation> {
-        let mut ops = vec![];
-
-        ops.push(EntityOperation::AbortUnless {
-            description: "Subgraph deployment entity must exist to be updated".to_owned(),
-            query: Self::query().filter(EntityFilter::And(vec![EntityFilter::new_equal(
-                "id",
-                id.to_string(),
-            )])),
-            entity_ids: vec![id.to_string()],
-        });
-
         let mut entity = Entity::new();
-        entity.set("id", id.to_string());
         entity.set("synced", synced);
-        ops.push(set_entity_operation(Self::TYPENAME, id.to_string(), entity));
 
-        ops
+        vec![EntityOperation::Update {
+            key: Self::key(id.clone()),
+            data: entity,
+            guard: None,
+        }]
     }
 }
 
@@ -474,7 +429,7 @@ impl<'a> From<&'a super::DataSource> for EthereumContractDataSourceEntity {
 
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
 struct EthereumContractSourceEntity {
-    address: super::Address,
+    address: Option<super::Address>,
     abi: String,
 }
 
@@ -721,7 +676,11 @@ pub fn attribute_index_definitions(
     for (entity_number, schema_type) in document.definitions.clone().into_iter().enumerate() {
         if let Definition::TypeDefinition(definition) = schema_type {
             if let TypeDefinition::Object(schema_object) = definition {
-                for (attribute_number, entity_field) in schema_object.fields.into_iter().enumerate()
+                for (attribute_number, entity_field) in schema_object
+                    .fields
+                    .into_iter()
+                    .filter(|f| f.name != "id")
+                    .enumerate()
                 {
                     indexing_ops.push(AttributeIndexDefinition {
                         subgraph_id: subgraph_id.clone(),

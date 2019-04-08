@@ -4,10 +4,10 @@ use ethabi::Token;
 use futures::sync::oneshot;
 use graph::components::ethereum::*;
 use graph::components::store::EntityKey;
-use graph::data::store::scalar;
 use graph::prelude::*;
 use graph::serde_json;
 use graph::web3::types::H160;
+use semver::Version;
 use std::collections::HashMap;
 use std::fmt;
 use std::ops::Deref;
@@ -31,6 +31,7 @@ impl<E: fmt::Display> fmt::Display for HostExportError<E> {
 
 pub(crate) struct HostExports<E, L, S, U> {
     subgraph_id: SubgraphDeploymentId,
+    pub api_version: Version,
     abis: Vec<MappingABI>,
     ethereum_adapter: Arc<E>,
     link_resolver: Arc<L>,
@@ -47,6 +48,7 @@ where
 {
     pub(crate) fn new(
         subgraph_id: SubgraphDeploymentId,
+        api_version: Version,
         abis: Vec<MappingABI>,
         ethereum_adapter: Arc<E>,
         link_resolver: Arc<L>,
@@ -55,6 +57,7 @@ where
     ) -> Self {
         HostExports {
             subgraph_id,
+            api_version,
             abis,
             ethereum_adapter,
             link_resolver,
@@ -246,7 +249,15 @@ where
         &self,
         bytes: Vec<u8>,
     ) -> Result<String, HostExportError<impl ExportError>> {
-        let s = String::from_utf8(bytes).map_err(HostExportError)?;
+        let s = String::from_utf8(bytes).map_err(|e| {
+            HostExportError(format!(
+                "Failed to parse byte array using `toString()`. This may be caused by attempting \
+                 to convert a value such as an address that cannot be parsed to a unicode string. \
+                 Try 'toHexString()' instead. Bytes: `{bytes:?}`. Error: {error}",
+                error = e.utf8_error(),
+                bytes = e.into_bytes(),
+            ))
+        })?;
         // The string may have been encoded in a fixed length
         // buffer and padded with null characters, so trim
         // trailing nulls.
@@ -303,7 +314,13 @@ where
         &self,
         bytes: Vec<u8>,
     ) -> Result<serde_json::Value, HostExportError<impl ExportError>> {
-        serde_json::from_reader(&*bytes).map_err(HostExportError)
+        serde_json::from_reader(&*bytes).map_err(|e| {
+            HostExportError(format!(
+                "Failed to parse JSON from byte array. Bytes: `{bytes:?}`. Error: {error}",
+                bytes = bytes,
+                error = e,
+            ))
+        })
     }
 
     pub(crate) fn ipfs_cat(
@@ -349,7 +366,7 @@ where
         &self,
         json: String,
     ) -> Result<Vec<u8>, HostExportError<impl ExportError>> {
-        let big_int = scalar::BigInt::from_str(&json)
+        let big_int = BigInt::from_str(&json)
             .map_err(|_| HostExportError(format!("JSON `{}` is not a decimal string", json)))?;
         Ok(big_int.to_signed_bytes_le())
     }
@@ -413,6 +430,50 @@ where
     /// Useful for IPFS hashes stored as bytes
     pub(crate) fn bytes_to_base58(&self, bytes: Vec<u8>) -> String {
         ::bs58::encode(&bytes).into_string()
+    }
+
+    pub(crate) fn big_decimal_plus(&self, x: BigDecimal, y: BigDecimal) -> BigDecimal {
+        x + y
+    }
+
+    pub(crate) fn big_decimal_minus(&self, x: BigDecimal, y: BigDecimal) -> BigDecimal {
+        x - y
+    }
+
+    pub(crate) fn big_decimal_times(&self, x: BigDecimal, y: BigDecimal) -> BigDecimal {
+        x * y
+    }
+
+    /// Maximum precision of 100 decimal digits.
+    pub(crate) fn big_decimal_divided_by(
+        &self,
+        x: BigDecimal,
+        y: BigDecimal,
+    ) -> Result<BigDecimal, HostExportError<impl ExportError>> {
+        if y == 0.into() {
+            return Err(HostExportError(format!(
+                "attempted to divide BigDecimal `{}` by zero",
+                x
+            )));
+        }
+
+        Ok(x / y)
+    }
+
+    pub(crate) fn big_decimal_equals(&self, x: BigDecimal, y: BigDecimal) -> bool {
+        x == y
+    }
+
+    pub(crate) fn big_decimal_to_string(&self, x: BigDecimal) -> String {
+        x.to_string()
+    }
+
+    pub(crate) fn big_decimal_from_string(
+        &self,
+        s: String,
+    ) -> Result<BigDecimal, HostExportError<impl ExportError>> {
+        BigDecimal::from_str(&s)
+            .map_err(|e| HostExportError(format!("failed to parse BigDecimal: {}", e)))
     }
 }
 

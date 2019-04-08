@@ -1,4 +1,5 @@
 extern crate backtrace;
+pub extern crate bigdecimal;
 extern crate diesel;
 pub extern crate ethabi;
 extern crate futures;
@@ -17,6 +18,7 @@ pub extern crate failure;
 extern crate ipfs_api;
 extern crate parity_wasm;
 extern crate rand;
+extern crate semver;
 pub extern crate serde_json;
 pub extern crate slog_async;
 extern crate slog_envlogger;
@@ -88,7 +90,7 @@ pub mod prelude {
         Query, QueryError, QueryExecutionError, QueryResult, QueryVariables,
     };
     pub use crate::data::schema::Schema;
-    pub use crate::data::store::scalar::{BigInt, BigIntSign};
+    pub use crate::data::store::scalar::{BigDecimal, BigInt, BigIntSign};
     pub use crate::data::store::{
         AssignmentEvent, Attribute, Entity, NodeId, SubgraphEntityPair, SubgraphVersionSummary,
         Value, ValueType,
@@ -98,6 +100,7 @@ pub mod prelude {
         CreateSubgraphResult, DataSource, Link, MappingABI, MappingEventHandler, MappingTransactionHandler,
         MappingBlockHandler, SubgraphAssignmentProviderError, SubgraphAssignmentProviderEvent, SubgraphDeploymentId, 
         SubgraphManifest, SubgraphManifestResolveError, SubgraphName, SubgraphRegistrarError,
+        SubgraphManifestValidationError,
     };
     pub use crate::data::subscription::{
         QueryResultStream, Subscription, SubscriptionError, SubscriptionResult,

@@ -26,6 +26,7 @@ where
         // we use the same order here as in the subgraph manifest to make the
         // event processing behavior predictable
         let manifest_id = manifest.id;
+
         let (hosts, errors): (_, Vec<_>) = manifest
             .data_sources
             .into_iter()

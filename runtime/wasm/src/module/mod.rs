@@ -2,6 +2,7 @@ use std::fmt;
 use std::ops::Deref;
 use std::time::Instant;
 
+use semver::Version;
 use wasmi::{
     nan_preserving_float::F64, Error, Externals, FuncInstance, FuncRef, HostError, ImportsBuilder,
     MemoryRef, Module, ModuleImportResolver, ModuleInstance, ModuleRef, RuntimeArgs, RuntimeValue,
@@ -50,6 +51,14 @@ const BIG_INT_DIVIDED_BY: usize = 22;
 const BIG_INT_MOD: usize = 23;
 const GAS_FUNC_INDEX: usize = 24;
 const TYPE_CONVERSION_BYTES_TO_BASE_58_INDEX: usize = 25;
+const BIG_INT_DIVIDED_BY_DECIMAL: usize = 26;
+const BIG_DECIMAL_PLUS: usize = 27;
+const BIG_DECIMAL_MINUS: usize = 28;
+const BIG_DECIMAL_TIMES: usize = 29;
+const BIG_DECIMAL_DIVIDED_BY: usize = 30;
+const BIG_DECIMAL_EQUALS: usize = 31;
+const BIG_DECIMAL_TO_STRING: usize = 32;
+const BIG_DECIMAL_FROM_STRING: usize = 33;
 
 pub struct WasmiModuleConfig<T, L, S> {
     pub subgraph_id: SubgraphDeploymentId,
@@ -115,6 +124,7 @@ where
         // Create new instance of externally hosted functions invoker
         let host_exports = HostExports::new(
             config.subgraph_id,
+            Version::parse(&config.data_source.mapping.api_version)?,
             config.data_source.mapping.abis,
             config.ethereum_adapter.clone(),
             config.link_resolver.clone(),
@@ -207,21 +217,42 @@ where
         params: Vec<LogParam>,
     ) -> Result<Vec<EntityOperation>, FailureError> {
         self.start_time = Instant::now();
+        let block = self.ctx.block.block.clone();
+
         // Prepare an EthereumEvent for the WASM runtime
-        let arg = EthereumEventData {
-            block: EthereumBlockData::from(&self.ctx.block.block),
-            transaction: EthereumTransactionData::from(transaction.deref()),
-            address: log.address,
-            log_index: log.log_index.unwrap_or(U256::zero()),
-            transaction_log_index: log.transaction_log_index.unwrap_or(U256::zero()),
-            log_type: log.log_type.clone(),
-            params,
+        // Decide on the destination type using the mapping
+        // api version provided in the subgraph manifest
+        let event = if self.host_exports.api_version >= Version::new(0, 0, 2) {
+            RuntimeValue::from(
+                self.asc_new::<AscEthereumEvent<AscEthereumTransaction_0_0_2>, _>(
+                    &EthereumEventData {
+                        block: EthereumBlockData::from(&block),
+                        transaction: EthereumTransactionData::from(transaction.deref()),
+                        address: log.address,
+                        log_index: log.log_index.unwrap_or(U256::zero()),
+                        transaction_log_index: log.transaction_log_index.unwrap_or(U256::zero()),
+                        log_type: log.log_type.clone(),
+                        params,
+                    },
+                ),
+            )
+        } else {
+            RuntimeValue::from(self.asc_new::<AscEthereumEvent<AscEthereumTransaction>, _>(
+                &EthereumEventData {
+                    block: EthereumBlockData::from(&block),
+                    transaction: EthereumTransactionData::from(transaction.deref()),
+                    address: log.address,
+                    log_index: log.log_index.unwrap_or(U256::zero()),
+                    transaction_log_index: log.transaction_log_index.unwrap_or(U256::zero()),
+                    log_type: log.log_type.clone(),
+                    params,
+                },
+            ))
         };
-        let result = self.module.clone().invoke_export(
-            handler_name,
-            &[RuntimeValue::from(self.asc_new(&arg))],
-            &mut self,
-        );
+        let result = self
+            .module
+            .clone()
+            .invoke_export(handler_name, &[event], &mut self);
         result.map(|_| self.ctx.entity_operations)
             .map_err(|e| {
                 format_err!(
@@ -610,6 +641,19 @@ where
         Ok(Some(RuntimeValue::from(result_ptr)))
     }
 
+    /// function bigInt.dividedByDecimal(x: BigInt, y: BigDecimal): BigDecimal
+    fn big_int_divided_by_decimal(
+        &mut self,
+        x_ptr: AscPtr<AscBigInt>,
+        y_ptr: AscPtr<AscBigDecimal>,
+    ) -> Result<Option<RuntimeValue>, Trap> {
+        let x = self.asc_get::<BigInt, _>(x_ptr).to_big_decimal(0.into());
+        let result = self
+            .host_exports
+            .big_decimal_divided_by(x, self.asc_get(y_ptr))?;
+        Ok(Some(RuntimeValue::from(self.asc_new(&result))))
+    }
+
     /// function bigInt.mod(x: BigInt, y: BigInt): BigInt
     fn big_int_mod(
         &mut self,
@@ -630,6 +674,88 @@ where
         let result = self.host_exports.bytes_to_base58(self.asc_get(bytes_ptr));
         let result_ptr: AscPtr<AscString> = self.asc_new(&result);
         Ok(Some(RuntimeValue::from(result_ptr)))
+    }
+
+    /// function bigDecimal.toString(x: BigDecimal): string
+    fn big_decimal_to_string(
+        &mut self,
+        big_decimal_ptr: AscPtr<AscBigDecimal>,
+    ) -> Result<Option<RuntimeValue>, Trap> {
+        let result = self
+            .host_exports
+            .big_decimal_to_string(self.asc_get(big_decimal_ptr));
+        Ok(Some(RuntimeValue::from(self.asc_new(&result))))
+    }
+
+    /// function bigDecimal.fromString(x: string): BigDecimal
+    fn big_decimal_from_string(
+        &mut self,
+        string_ptr: AscPtr<AscString>,
+    ) -> Result<Option<RuntimeValue>, Trap> {
+        let result = self
+            .host_exports
+            .big_decimal_from_string(self.asc_get(string_ptr))?;
+        Ok(Some(RuntimeValue::from(self.asc_new(&result))))
+    }
+
+    /// function bigDecimal.plus(x: BigDecimal, y: BigDecimal): BigDecimal
+    fn big_decimal_plus(
+        &mut self,
+        x_ptr: AscPtr<AscBigDecimal>,
+        y_ptr: AscPtr<AscBigDecimal>,
+    ) -> Result<Option<RuntimeValue>, Trap> {
+        let result = self
+            .host_exports
+            .big_decimal_plus(self.asc_get(x_ptr), self.asc_get(y_ptr));
+        Ok(Some(RuntimeValue::from(self.asc_new(&result))))
+    }
+
+    /// function bigDecimal.minus(x: BigDecimal, y: BigDecimal): BigDecimal
+    fn big_decimal_minus(
+        &mut self,
+        x_ptr: AscPtr<AscBigDecimal>,
+        y_ptr: AscPtr<AscBigDecimal>,
+    ) -> Result<Option<RuntimeValue>, Trap> {
+        let result = self
+            .host_exports
+            .big_decimal_minus(self.asc_get(x_ptr), self.asc_get(y_ptr));
+        Ok(Some(RuntimeValue::from(self.asc_new(&result))))
+    }
+
+    /// function bigDecimal.times(x: BigDecimal, y: BigDecimal): BigDecimal
+    fn big_decimal_times(
+        &mut self,
+        x_ptr: AscPtr<AscBigDecimal>,
+        y_ptr: AscPtr<AscBigDecimal>,
+    ) -> Result<Option<RuntimeValue>, Trap> {
+        let result = self
+            .host_exports
+            .big_decimal_times(self.asc_get(x_ptr), self.asc_get(y_ptr));
+        Ok(Some(RuntimeValue::from(self.asc_new(&result))))
+    }
+
+    /// function bigDecimal.dividedBy(x: BigDecimal, y: BigDecimal): BigDecimal
+    fn big_decimal_divided_by(
+        &mut self,
+        x_ptr: AscPtr<AscBigDecimal>,
+        y_ptr: AscPtr<AscBigDecimal>,
+    ) -> Result<Option<RuntimeValue>, Trap> {
+        let result = self
+            .host_exports
+            .big_decimal_divided_by(self.asc_get(x_ptr), self.asc_get(y_ptr))?;
+        Ok(Some(RuntimeValue::from(self.asc_new(&result))))
+    }
+
+    /// function bigDecimal.equals(x: BigDecimal, y: BigDecimal): bool
+    fn big_decimal_equals(
+        &mut self,
+        x_ptr: AscPtr<AscBigDecimal>,
+        y_ptr: AscPtr<AscBigDecimal>,
+    ) -> Result<Option<RuntimeValue>, Trap> {
+        let equals = self
+            .host_exports
+            .big_decimal_equals(self.asc_get(x_ptr), self.asc_get(y_ptr));
+        Ok(Some(RuntimeValue::I32(if equals { 1 } else { 0 })))
     }
 }
 
@@ -686,9 +812,23 @@ where
             BIG_INT_DIVIDED_BY => {
                 self.big_int_divided_by(args.nth_checked(0)?, args.nth_checked(1)?)
             }
+            BIG_INT_DIVIDED_BY_DECIMAL => {
+                self.big_int_divided_by_decimal(args.nth_checked(0)?, args.nth_checked(1)?)
+            }
             BIG_INT_MOD => self.big_int_mod(args.nth_checked(0)?, args.nth_checked(1)?),
             GAS_FUNC_INDEX => self.gas(args.nth_checked(0)?),
             TYPE_CONVERSION_BYTES_TO_BASE_58_INDEX => self.bytes_to_base58(args.nth_checked(0)?),
+            BIG_DECIMAL_PLUS => self.big_decimal_plus(args.nth_checked(0)?, args.nth_checked(1)?),
+            BIG_DECIMAL_MINUS => self.big_decimal_minus(args.nth_checked(0)?, args.nth_checked(1)?),
+            BIG_DECIMAL_TIMES => self.big_decimal_times(args.nth_checked(0)?, args.nth_checked(1)?),
+            BIG_DECIMAL_DIVIDED_BY => {
+                self.big_decimal_divided_by(args.nth_checked(0)?, args.nth_checked(1)?)
+            }
+            BIG_DECIMAL_EQUALS => {
+                self.big_decimal_equals(args.nth_checked(0)?, args.nth_checked(1)?)
+            }
+            BIG_DECIMAL_TO_STRING => self.big_decimal_to_string(args.nth_checked(0)?),
+            BIG_DECIMAL_FROM_STRING => self.big_decimal_from_string(args.nth_checked(0)?),
             _ => panic!("Unimplemented function at {}", index),
         }
     }
@@ -770,7 +910,20 @@ impl ModuleImportResolver for ModuleResolver {
             "bigInt.minus" => FuncInstance::alloc_host(signature, BIG_INT_MINUS),
             "bigInt.times" => FuncInstance::alloc_host(signature, BIG_INT_TIMES),
             "bigInt.dividedBy" => FuncInstance::alloc_host(signature, BIG_INT_DIVIDED_BY),
+            "bigInt.dividedByDecimal" => {
+                FuncInstance::alloc_host(signature, BIG_INT_DIVIDED_BY_DECIMAL)
+            }
             "bigInt.mod" => FuncInstance::alloc_host(signature, BIG_INT_MOD),
+
+            // bigDecimal
+            "bigDecimal.plus" => FuncInstance::alloc_host(signature, BIG_DECIMAL_PLUS),
+            "bigDecimal.minus" => FuncInstance::alloc_host(signature, BIG_DECIMAL_MINUS),
+            "bigDecimal.times" => FuncInstance::alloc_host(signature, BIG_DECIMAL_TIMES),
+            "bigDecimal.dividedBy" => FuncInstance::alloc_host(signature, BIG_DECIMAL_DIVIDED_BY),
+            "bigDecimal.equals" => FuncInstance::alloc_host(signature, BIG_DECIMAL_EQUALS),
+            "bigDecimal.toString" => FuncInstance::alloc_host(signature, BIG_DECIMAL_TO_STRING),
+            "bigDecimal.fromString" => FuncInstance::alloc_host(signature, BIG_DECIMAL_FROM_STRING),
+
             _ => {
                 return Err(Error::Instantiation(format!(
                     "Export '{}' not found",

@@ -11,6 +11,7 @@ use graph::prelude::*;
 use crate::prelude::*;
 use crate::query::ast as qast;
 use crate::schema::ast as sast;
+use crate::values::coercion;
 
 /// Contextual information passed around during query execution.
 #[derive(Clone)]
@@ -304,7 +305,7 @@ where
     R1: Resolver,
     R2: Resolver,
 {
-    coerce_argument_values(ctx.clone(), object_type, field)
+    coerce_argument_values(&ctx, object_type, field)
         .and_then(|argument_values| {
             resolve_field_value(
                 ctx.clone(),
@@ -344,9 +345,15 @@ where
             argument_values,
         ),
 
-        s::Type::NamedType(ref name) => {
-            resolve_field_value_for_named_type(ctx, object_value, field, name, argument_values)
-        }
+        s::Type::NamedType(ref name) => resolve_field_value_for_named_type(
+            ctx,
+            object_type,
+            object_value,
+            field,
+            field_definition,
+            name,
+            argument_values,
+        ),
 
         s::Type::ListType(inner_type) => resolve_field_value_for_list_type(
             ctx,
@@ -363,8 +370,10 @@ where
 /// Resolves the value of a field that corresponds to a named type.
 fn resolve_field_value_for_named_type<'a, R1, R2>(
     ctx: ExecutionContext<'a, R1, R2>,
+    object_type: &s::ObjectType,
     object_value: &Option<q::Value>,
     field: &q::Field,
+    field_definition: &s::Field,
     type_name: &s::Name,
     argument_values: &HashMap<&q::Name, q::Value>,
 ) -> Result<q::Value, Vec<QueryExecutionError>>
@@ -390,7 +399,8 @@ where
             if ctx.introspecting {
                 ctx.introspection_resolver.resolve_object(
                     object_value,
-                    &field.name,
+                    field,
+                    field_definition,
                     t.into(),
                     argument_values,
                     &BTreeMap::new(), // The introspection schema has no interfaces.
@@ -398,7 +408,8 @@ where
             } else {
                 ctx.resolver.resolve_object(
                     object_value,
-                    &field.name,
+                    field,
+                    field_definition,
                     t.into(),
                     argument_values,
                     ctx.schema.types_for_interface(),
@@ -411,11 +422,11 @@ where
         s::TypeDefinition::Enum(t) => match object_value {
             Some(q::Value::Object(o)) => {
                 if ctx.introspecting {
-                    Ok(ctx
-                        .introspection_resolver
-                        .resolve_enum_value(t, o.get(&field.name)))
+                    ctx.introspection_resolver
+                        .resolve_enum_value(field, t, o.get(&field.name))
                 } else {
-                    Ok(ctx.resolver.resolve_enum_value(t, o.get(&field.name)))
+                    ctx.resolver
+                        .resolve_enum_value(field, t, o.get(&field.name))
                 }
             }
             _ => Ok(q::Value::Null),
@@ -426,11 +437,16 @@ where
         s::TypeDefinition::Scalar(t) => match object_value {
             Some(q::Value::Object(o)) => {
                 if ctx.introspecting {
-                    Ok(ctx
-                        .introspection_resolver
-                        .resolve_scalar_value(t, o.get(&field.name)))
+                    ctx.introspection_resolver.resolve_scalar_value(
+                        object_type,
+                        o,
+                        field,
+                        t,
+                        o.get(&field.name),
+                    )
                 } else {
-                    Ok(ctx.resolver.resolve_scalar_value(t, o.get(&field.name)))
+                    ctx.resolver
+                        .resolve_scalar_value(object_type, o, field, t, o.get(&field.name))
                 }
             }
             _ => Ok(q::Value::Null),
@@ -440,7 +456,8 @@ where
             if ctx.introspecting {
                 ctx.introspection_resolver.resolve_object(
                     object_value,
-                    &field.name,
+                    field,
+                    field_definition,
                     i.into(),
                     argument_values,
                     &BTreeMap::new(), // The introspection schema has no interfaces.
@@ -448,7 +465,8 @@ where
             } else {
                 ctx.resolver.resolve_object(
                     object_value,
-                    &field.name,
+                    field,
+                    field_definition,
                     i.into(),
                     argument_values,
                     ctx.schema.types_for_interface(),
@@ -460,12 +478,7 @@ where
 
         s::TypeDefinition::InputObject(_) => unreachable!("input objects are never resolved"),
     }
-    .map_err(|e| {
-        vec![
-            e,
-            QueryExecutionError::NamedTypeError(type_name.to_string()),
-        ]
-    })
+    .map_err(|e| vec![e])
 }
 
 /// Resolves the value of a field that corresponds to a list type.
@@ -533,11 +546,14 @@ where
                 s::TypeDefinition::Enum(t) => match object_value {
                     Some(q::Value::Object(o)) => {
                         if ctx.introspecting {
-                            Ok(ctx
-                                .introspection_resolver
-                                .resolve_enum_values(&t, o.get(&field.name)))
+                            ctx.introspection_resolver.resolve_enum_values(
+                                field,
+                                &t,
+                                o.get(&field.name),
+                            )
                         } else {
-                            Ok(ctx.resolver.resolve_enum_values(&t, o.get(&field.name)))
+                            ctx.resolver
+                                .resolve_enum_values(field, &t, o.get(&field.name))
                         }
                     }
                     _ => Ok(q::Value::Null),
@@ -548,11 +564,14 @@ where
                 s::TypeDefinition::Scalar(t) => match object_value {
                     Some(q::Value::Object(o)) => {
                         if ctx.introspecting {
-                            Ok(ctx
-                                .introspection_resolver
-                                .resolve_scalar_values(&t, o.get(&field.name)))
+                            ctx.introspection_resolver.resolve_scalar_values(
+                                field,
+                                &t,
+                                o.get(&field.name),
+                            )
                         } else {
-                            Ok(ctx.resolver.resolve_scalar_values(&t, o.get(&field.name)))
+                            ctx.resolver
+                                .resolve_scalar_values(field, &t, o.get(&field.name))
                         }
                     }
                     _ => Ok(q::Value::Null),
@@ -773,7 +792,7 @@ fn merge_selection_sets(fields: Vec<&q::Field>) -> q::SelectionSet {
 
 /// Coerces argument values into GraphQL values.
 pub fn coerce_argument_values<'a, R1, R2>(
-    ctx: ExecutionContext<'_, R1, R2>,
+    ctx: &ExecutionContext<'_, R1, R2>,
     object_type: &'a s::ObjectType,
     field: &q::Field,
 ) -> Result<HashMap<&'a q::Name, q::Value>, Vec<QueryExecutionError>>
@@ -783,69 +802,6 @@ where
 {
     let mut coerced_values = HashMap::new();
     let mut errors = vec![];
-
-    if let Some(argument_definitions) = sast::get_argument_definitions(object_type, &field.name) {
-        for argument_def in argument_definitions {
-            // Look up the argument value, resolve it if it is a variable
-            let mut value: Option<&q::Value> =
-                qast::get_argument_value(&field.arguments, &argument_def.name);
-            let mut is_variable = false;
-
-            if let Some(q::Value::Variable(name)) = value {
-                value = ctx.variable_values.get(name);
-                is_variable = true
-            }
-
-            if value.is_none() && argument_def.default_value.is_some() {
-                coerced_values.insert(
-                    &argument_def.name,
-                    argument_def.default_value.to_owned().unwrap(),
-                );
-            } else if sast::is_non_null_type(&argument_def.value_type)
-                && (value.is_none() || value == Some(&q::Value::Null))
-            {
-                match value {
-                    Some(value) => errors.push(QueryExecutionError::InvalidArgumentError(
-                        field.position,
-                        argument_def.name.to_owned(),
-                        value.to_owned(),
-                    )),
-                    None => errors.push(QueryExecutionError::MissingArgumentError(
-                        field.position,
-                        argument_def.name.to_owned(),
-                    )),
-                }
-            } else if let Some(val) = value {
-                if val == &q::Value::Null || is_variable {
-                    coerced_values.insert(&argument_def.name, val.to_owned());
-                } else {
-                    let value = coerce_argument_value(ctx.clone(), field, &argument_def, val)?;
-                    coerced_values.insert(&argument_def.name, value);
-                }
-            }
-        }
-    };
-
-    if errors.is_empty() {
-        Ok(coerced_values)
-    } else {
-        Err(errors)
-    }
-}
-
-/// Coerces a single argument value into a GraphQL value.
-fn coerce_argument_value<'a, R1, R2>(
-    ctx: ExecutionContext<'a, R1, R2>,
-    field: &q::Field,
-    argument: &s::InputValue,
-    value: &q::Value,
-) -> Result<q::Value, Vec<QueryExecutionError>>
-where
-    R1: Resolver,
-    R2: Resolver,
-{
-    use crate::values::coercion::coerce_value;
-    use graphql_parser::schema::Name;
 
     let resolver = |name: &Name| {
         sast::get_named_type(
@@ -858,13 +814,25 @@ where
         )
     };
 
-    coerce_value(&value, &argument.value_type, &resolver).ok_or_else(|| {
-        vec![QueryExecutionError::InvalidArgumentError(
-            field.position,
-            argument.name.to_owned(),
-            value.clone(),
-        )]
-    })
+    for argument_def in sast::get_argument_definitions(object_type, &field.name)
+        .into_iter()
+        .flatten()
+    {
+        let value = qast::get_argument_value(&field.arguments, &argument_def.name).cloned();
+        match coercion::coerce_input_value(value, &argument_def, &resolver, &ctx.variable_values) {
+            Ok(Some(value)) => {
+                coerced_values.insert(&argument_def.name, value);
+            }
+            Ok(None) => {}
+            Err(e) => errors.push(e),
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(coerced_values)
+    } else {
+        Err(errors)
+    }
 }
 
 fn get_field_type<'a, R1, R2>(
@@ -894,59 +862,43 @@ pub fn coerce_variable_values(
     let mut coerced_values = HashMap::new();
     let mut errors = vec![];
 
-    if let Some(variable_definitions) = qast::get_variable_definitions(operation) {
-        for variable_def in variable_definitions.iter() {
-            // Skip variable if it has an invalid type
-            if !sast::is_input_type(&schema.document, &variable_def.var_type) {
-                errors.push(QueryExecutionError::InvalidVariableTypeError(
-                    variable_def.position,
-                    variable_def.name.to_owned(),
-                ));
+    for variable_def in qast::get_variable_definitions(operation)
+        .into_iter()
+        .flatten()
+    {
+        // Skip variable if it has an invalid type
+        if !sast::is_input_type(&schema.document, &variable_def.var_type) {
+            errors.push(QueryExecutionError::InvalidVariableTypeError(
+                variable_def.position,
+                variable_def.name.to_owned(),
+            ));
+            continue;
+        }
+
+        let value = variables
+            .as_ref()
+            .and_then(|vars| vars.get(&variable_def.name));
+
+        let value = match value.or(variable_def.default_value.as_ref()) {
+            // No variable value provided and no default for non-null type, fail
+            None => {
+                if sast::is_non_null_type(&variable_def.var_type) {
+                    errors.push(QueryExecutionError::MissingVariableError(
+                        variable_def.position,
+                        variable_def.name.to_owned(),
+                    ));
+                };
                 continue;
             }
+            Some(value) => value,
+        };
 
-            let value = match variables {
-                None => None,
-                Some(vars) => vars.get(&variable_def.name),
-            };
-
-            match value.map(|val| val.deref().to_owned()) {
-                // No variable value provided, either use the default or fail
-                None => {
-                    if let Some(ref default_value) = variable_def.default_value {
-                        coerced_values
-                            .insert(variable_def.name.to_owned(), default_value.to_owned());
-                    } else if let s::Type::NonNullType(_) = variable_def.var_type {
-                        errors.push(QueryExecutionError::MissingVariableError(
-                            variable_def.position,
-                            variable_def.name.to_owned(),
-                        ));
-                    }
-                }
-
-                // A null value was provided, either use it or fail
-                Some(q::Value::Null) => {
-                    if let s::Type::NonNullType(_) = variable_def.var_type {
-                        errors.push(QueryExecutionError::InvalidVariableError(
-                            variable_def.position,
-                            variable_def.name.to_owned(),
-                            q::Value::Null,
-                        ));
-                    } else {
-                        coerced_values.insert(variable_def.name.to_owned(), q::Value::Null);
-                    }
-                }
-
-                // We have a variable value, attempt to coerce it to the value type
-                // of the variable definition
-                Some(value) => {
-                    coerced_values.insert(
-                        variable_def.name.to_owned(),
-                        coerce_variable_value(schema, variable_def, &value)?,
-                    );
-                }
-            }
-        }
+        // We have a variable value, attempt to coerce it to the value type
+        // of the variable definition
+        coerced_values.insert(
+            variable_def.name.to_owned(),
+            coerce_variable_value(schema, variable_def, &value)?,
+        );
     }
 
     if errors.is_empty() {
@@ -966,7 +918,7 @@ fn coerce_variable_value(
 
     let resolver = |name: &Name| sast::get_named_type(&schema.document, name);
 
-    coerce_value(&value, &variable_def.var_type, &resolver).ok_or_else(|| {
+    coerce_value(&value, &variable_def.var_type, &resolver, &HashMap::new()).ok_or_else(|| {
         vec![QueryExecutionError::InvalidArgumentError(
             variable_def.position,
             variable_def.name.to_owned(),

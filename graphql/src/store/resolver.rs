@@ -5,11 +5,9 @@ use std::result;
 use std::sync::Arc;
 
 use graph::components::store::*;
-use graph::data::subgraph::schema::SubgraphDeploymentEntity;
 use graph::prelude::*;
 
 use crate::prelude::*;
-use crate::query::ast as qast;
 use crate::schema::ast as sast;
 use crate::store::query::{collect_entities_from_query_field, parse_subgraph_id};
 
@@ -42,15 +40,6 @@ where
         }
     }
 
-    /// If the field has a `@derivedFrom(field: "foo")` directive, obtain the
-    /// name of the field (e.g. `"foo"`)
-    fn get_derived_from_directive(field_definition: &s::Field) -> Option<&s::Directive> {
-        field_definition
-            .directives
-            .iter()
-            .find(|directive| directive.name == s::Name::from("derivedFrom"))
-    }
-
     /// Adds a filter for matching entities that correspond to a derived field.
     ///
     /// Returns true if the field is a derived field (i.e., if it is defined with
@@ -58,73 +47,58 @@ where
     fn add_filter_for_derived_field(
         query: &mut EntityQuery,
         parent: &Option<q::Value>,
-        field_definition: &s::Field,
-        object_type: ObjectOrInterface,
-    ) -> bool {
-        let derived_from_field = Self::get_derived_from_directive(field_definition)
-            .and_then(|directive| {
-                qast::get_argument_value(&directive.arguments, &q::Name::from("field"))
-            })
+        derived_from_field: &s::Field,
+    ) {
+        // This field is derived from a field in the object type that we're trying
+        // to resolve values for; e.g. a `bandMembers` field maybe be derived from
+        // a `bands` or `band` field in a `Musician` type.
+        //
+        // Our goal here is to identify the ID of the parent entity (e.g. the ID of
+        // a band) and add a `Contains("bands", [<id>])` or `Equal("band", <id>)`
+        // filter to the arguments.
+
+        let field_name = derived_from_field.name.clone();
+
+        // To achieve this, we first identify the parent ID
+        let parent_id = parent
+            .as_ref()
             .and_then(|value| match value {
-                q::Value::String(s) => Some(s),
+                q::Value::Object(o) => Some(o),
                 _ => None,
             })
-            .and_then(|derived_from_field_name| {
-                sast::get_field_type(object_type, derived_from_field_name)
-            });
+            .and_then(|object| object.get(&q::Name::from("id")))
+            .and_then(|value| match value {
+                q::Value::String(s) => Some(Value::from(s)),
+                _ => None,
+            })
+            .expect("Parent object is missing an \"id\"")
+            .clone();
 
-        if let Some(derived_from_field) = derived_from_field {
-            // This field is derived from a field in the object type that we're trying
-            // to resolve values for; e.g. a `bandMembers` field maybe be derived from
-            // a `bands` or `band` field in a `Musician` type.
-            //
-            // Our goal here is to identify the ID of the parent entity (e.g. the ID of
-            // a band) and add a `Contains("bands", <id>)` or `Equal("band", <id>)` filter
-            // to the arguments
-
-            let field_name = derived_from_field.name.clone();
-
-            // To achieve this, we first identify the parent ID
-            let parent_id = parent
-                .as_ref()
-                .and_then(|value| match value {
-                    q::Value::Object(o) => Some(o),
-                    _ => None,
-                })
-                .and_then(|object| object.get(&q::Name::from("id")))
-                .and_then(|value| match value {
-                    q::Value::String(s) => Some(Value::from(s)),
-                    _ => None,
-                })
-                .expect("Parent object is missing an \"id\"")
-                .clone();
-
-            // Depending on whether the field we're deriving from has a list or a
-            // single value type, we either create a `Contains` or `Equal`
-            // filter argument
-            let filter = match derived_from_field.field_type {
-                s::Type::ListType(_) => EntityFilter::Contains(field_name, parent_id),
-                s::Type::NonNullType(ref inner) => match inner.deref() {
-                    s::Type::ListType(_) => EntityFilter::Contains(field_name, parent_id),
-                    _ => EntityFilter::Equal(field_name, parent_id),
-                },
-                _ => EntityFilter::Equal(field_name, parent_id),
-            };
-
-            // Add the `Contains`/`Equal` filter to the top-level `And` filter, creating one
-            // if necessary
-            let top_level_filter = query.filter.get_or_insert(EntityFilter::And(vec![]));
-            match top_level_filter {
-                EntityFilter::And(ref mut filters) => {
-                    filters.push(filter);
+        // Depending on whether the field we're deriving from has a list or a
+        // single value type, we either create a `Contains` or `Equal`
+        // filter argument
+        let filter = match derived_from_field.field_type {
+            s::Type::ListType(_) => {
+                EntityFilter::Contains(field_name, Value::List(vec![parent_id]))
+            }
+            s::Type::NonNullType(ref inner) => match inner.deref() {
+                s::Type::ListType(_) => {
+                    EntityFilter::Contains(field_name, Value::List(vec![parent_id]))
                 }
-                _ => unreachable!("top level filter is always `And`"),
-            };
+                _ => EntityFilter::Equal(field_name, parent_id),
+            },
+            _ => EntityFilter::Equal(field_name, parent_id),
+        };
 
-            true
-        } else {
-            false
-        }
+        // Add the `Contains`/`Equal` filter to the top-level `And` filter, creating one
+        // if necessary
+        let top_level_filter = query.filter.get_or_insert(EntityFilter::And(vec![]));
+        match top_level_filter {
+            EntityFilter::And(ref mut filters) => {
+                filters.push(filter);
+            }
+            _ => unreachable!("top level filter is always `And`"),
+        };
     }
 
     /// Adds a filter for matching entities that are referenced by the given field.
@@ -188,39 +162,73 @@ where
             })
             .unwrap_or(true)
     }
-
-    /// Compute special fields that are not stored such as as `entityCount`.
-    fn add_computed_fields(
-        &self,
-        mut entity: Entity,
-        object_type: ObjectOrInterface,
-    ) -> Result<Entity, QueryExecutionError> {
-        let subgraph_deployment_entity_pair = SubgraphDeploymentEntity::subgraph_entity_pair();
-        if (
-            parse_subgraph_id(object_type)?,
-            object_type.name().to_owned(),
-        ) == subgraph_deployment_entity_pair
-        {
-            let id = entity
-                .id()
-                .expect("subgraph deployment entity should have ID");
-            let hash = SubgraphDeploymentId::new(id).expect("invalid subgraph ID in database");
-            entity.insert(
-                "entityCount".to_owned(),
-                self.store
-                    .count_entities(hash)
-                    .map_err(QueryExecutionError::StoreError)?
-                    .into(),
-            );
-        }
-        Ok(entity)
-    }
 }
 
 impl<S> Resolver for StoreResolver<S>
 where
     S: Store,
 {
+    /// Resolves a scalar value for a given scalar type.
+    fn resolve_scalar_value(
+        &self,
+        parent_object_type: &s::ObjectType,
+        parent: &BTreeMap<String, q::Value>,
+        field: &q::Field,
+        scalar_type: &s::ScalarType,
+        value: Option<&q::Value>,
+    ) -> Result<q::Value, QueryExecutionError> {
+        let subgraph_id = parse_subgraph_id(parent_object_type).unwrap();
+
+        // Extract __typename from the parent object
+        let typename = parent
+            .get("__typename")
+            .and_then(|typename| match typename {
+                q::Value::String(typename) => Some(typename),
+                _ => None,
+            })
+            .expect("GraphQL object must have `__typename`");
+
+        match (
+            subgraph_id.deref().as_str(),
+            typename.as_str(),
+            field.name.as_str(),
+        ) {
+            // Compute `entityCount` on-demand
+            ("subgraphs", "SubgraphDeployment", "entityCount") => {
+                // Extract the entity ID
+                let id = parent
+                    .get("id")
+                    .and_then(|id| match id {
+                        q::Value::String(id) => Some(id),
+                        _ => None,
+                    })
+                    .expect("GraphQL object must have an `id`");
+
+                // Convert the ID to a subgraph deployment ID
+                let hash =
+                    SubgraphDeploymentId::new(id.clone()).expect("invalid subgraph ID in database");
+
+                // Return the entity count of the deployment as a BigInt
+                Ok(Value::from(
+                    self.store
+                        .count_entities(hash)
+                        .map_err(QueryExecutionError::StoreError)?,
+                )
+                .into())
+            }
+            _ => value.map_or(Ok(q::Value::Null), |value| {
+                value.coerce(scalar_type).ok_or_else(|| {
+                    QueryExecutionError::ScalarCoercionError(
+                        field.position.clone(),
+                        field.name.to_owned(),
+                        value.clone(),
+                        scalar_type.name.to_owned(),
+                    )
+                })
+            }),
+        }
+    }
+
     fn resolve_objects(
         &self,
         parent: &Option<q::Value>,
@@ -234,8 +242,11 @@ where
         let mut query = build_query(object_type, arguments, types_for_interface)?;
 
         // Add matching filter for derived fields
-        let is_derived =
-            Self::add_filter_for_derived_field(&mut query, parent, field_definition, object_type);
+        let derived_from_field = sast::get_derived_from_field(object_type, field_definition);
+        let is_derived = derived_from_field.is_some();
+        if let Some(derived_from_field) = derived_from_field {
+            Self::add_filter_for_derived_field(&mut query, parent, derived_from_field);
+        }
 
         // Return an empty list if we're dealing with a non-derived field that
         // holds an empty list of references; there's no point in querying the store
@@ -254,7 +265,7 @@ where
 
         let mut entity_values = Vec::new();
         for entity in self.store.find(query)? {
-            entity_values.push(self.add_computed_fields(entity, object_type)?.into())
+            entity_values.push(entity.into())
         }
         Ok(q::Value::List(entity_values))
     }
@@ -262,7 +273,8 @@ where
     fn resolve_object(
         &self,
         parent: &Option<q::Value>,
-        field: &q::Name,
+        field: &q::Field,
+        field_definition: &s::Field,
         object_type: ObjectOrInterface<'_>,
         arguments: &HashMap<&q::Name, q::Value>,
         types_for_interface: &BTreeMap<Name, Vec<ObjectType>>,
@@ -292,21 +304,54 @@ where
                 }
             }
         } else {
-            match parent {
-                Some(q::Value::Object(parent_object)) => match parent_object.get(field) {
-                    Some(q::Value::String(id)) => self.store.get(EntityKey {
-                        subgraph_id,
-                        entity_type: object_type.name().to_owned(),
-                        entity_id: id.to_owned(),
-                    })?,
-                    _ => None,
-                },
-                _ => panic!("top level queries must either take an `id` or return a list"),
+            // Identify whether the field is derived with @derivedFrom
+            let derived_from_field = sast::get_derived_from_field(object_type, field_definition);
+            if let Some(derived_from_field) = derived_from_field {
+                // The field is derived -> build a query for the entity that might be
+                // referencing the parent object
+
+                let mut arguments = arguments.clone();
+
+                // We use first: 2 here to detect and fail if there is more than one
+                // entity that matches the `@derivedFrom`.
+                let first_arg_name = q::Name::from("first");
+                arguments.insert(&first_arg_name, q::Value::Int(q::Number::from(2)));
+
+                let skip_arg_name = q::Name::from("skip");
+                arguments.insert(&skip_arg_name, q::Value::Int(q::Number::from(0)));
+                let mut query = build_query(object_type, &arguments, types_for_interface)?;
+                Self::add_filter_for_derived_field(&mut query, parent, derived_from_field);
+
+                // Find the entity or entities that reference the parent entity
+                let entities = self.store.find(query)?;
+
+                if entities.len() > 1 {
+                    return Err(QueryExecutionError::AmbiguousDerivedFromResult(
+                        field.position.clone(),
+                        field.name.to_owned(),
+                        object_type.name().to_owned(),
+                        derived_from_field.name.to_owned(),
+                    ));
+                } else {
+                    entities.into_iter().next()
+                }
+            } else {
+                match parent {
+                    Some(q::Value::Object(parent_object)) => match parent_object.get(&field.name) {
+                        Some(q::Value::String(id)) => self.store.get(EntityKey {
+                            subgraph_id,
+                            entity_type: object_type.name().to_owned(),
+                            entity_id: id.to_owned(),
+                        })?,
+                        _ => None,
+                    },
+                    _ => panic!("top level queries must either take an `id` or return a list"),
+                }
             }
         };
 
         Ok(match entity {
-            Some(entity) => self.add_computed_fields(entity, object_type)?.into(),
+            Some(entity) => entity.into(),
             None => q::Value::Null,
         })
     }

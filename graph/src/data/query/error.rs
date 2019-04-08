@@ -1,7 +1,5 @@
-use crate::data::subgraph::*;
-use graphql_parser::{query as q, Pos};
-
 use failure;
+use graphql_parser::{query as q, Pos};
 use hex::FromHexError;
 use num_bigint;
 use serde::ser::*;
@@ -9,6 +7,8 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 use std::string::FromUtf8Error;
+
+use crate::data::subgraph::*;
 
 /// Error caused while executing a [Query](struct.Query.html).
 #[derive(Debug)]
@@ -25,7 +25,6 @@ pub enum QueryExecutionError {
     InvalidArgumentError(Pos, String, q::Value),
     MissingArgumentError(Pos, String),
     InvalidVariableTypeError(Pos, String),
-    InvalidVariableError(Pos, String, q::Value),
     MissingVariableError(Pos, String),
     ResolveEntityError(SubgraphDeploymentId, String, String, String),
     ResolveEntitiesError(String),
@@ -47,7 +46,10 @@ pub enum QueryExecutionError {
     StoreError(failure::Error),
     Timeout,
     EmptySelectionSet(String),
+    AmbiguousDerivedFromResult(Pos, String, String, String),
     Unimplemented(String),
+    EnumCoercionError(Pos, String, q::Value, String, Vec<String>),
+    ScalarCoercionError(Pos, String, q::Value, String),
 }
 
 impl Error for QueryExecutionError {
@@ -96,9 +98,6 @@ impl fmt::Display for QueryExecutionError {
             }
             InvalidVariableTypeError(_, s) => {
                 write!(f, "Variable `{}` must have an input type", s)
-            }
-            InvalidVariableError(_, s, v) => {
-                write!(f, "Invalid value provided for variable `{}`: {:?}", s, v)
             }
             MissingVariableError(_, s) => {
                 write!(f, "No value provided for required variable `{}`", s)
@@ -169,8 +168,19 @@ impl fmt::Display for QueryExecutionError {
             EmptySelectionSet(entity_type) => {
                 write!(f, "Selection set for type `{}` is empty", entity_type)
             }
+            AmbiguousDerivedFromResult(_, field, target_type, target_field) => {
+                write!(f, "Ambiguous result for derived field `{}`: \
+                           Multiple `{}` entities refer back via `{}`",
+                       field, target_type, target_field)
+            }
             Unimplemented(feature) => {
                 write!(f, "Feature `{}` is not yet implemented", feature)
+            }
+            EnumCoercionError(_, field, value, enum_type, values) => {
+                write!(f, "Failed to coerce value `{}` of field `{}` to enum type `{}`. Possible values are: {}", value, field, enum_type, values.join(", "))
+            }
+            ScalarCoercionError(_, field, value, scalar_type) => {
+                write!(f, "Failed to coerce value `{}` of field `{}` to scalar type `{}`", value, field, scalar_type)
             }
         }
     }
@@ -191,6 +201,12 @@ impl From<FromHexError> for QueryExecutionError {
 impl From<num_bigint::ParseBigIntError> for QueryExecutionError {
     fn from(e: num_bigint::ParseBigIntError) -> Self {
         QueryExecutionError::ValueParseError("BigInt".to_string(), format!("{}", e))
+    }
+}
+
+impl From<bigdecimal::ParseBigDecimalError> for QueryExecutionError {
+    fn from(e: bigdecimal::ParseBigDecimalError) -> Self {
+        QueryExecutionError::ValueParseError("BigDecimal".to_string(), format!("{}", e))
     }
 }
 
@@ -296,8 +312,10 @@ impl Serialize for QueryError {
             | QueryError::ExecutionError(InvalidArgumentError(pos, _, _))
             | QueryError::ExecutionError(MissingArgumentError(pos, _))
             | QueryError::ExecutionError(InvalidVariableTypeError(pos, _))
-            | QueryError::ExecutionError(InvalidVariableError(pos, _, _))
-            | QueryError::ExecutionError(MissingVariableError(pos, _)) => {
+            | QueryError::ExecutionError(MissingVariableError(pos, _))
+            | QueryError::ExecutionError(AmbiguousDerivedFromResult(pos, _, _, _))
+            | QueryError::ExecutionError(EnumCoercionError(pos, _, _, _, _))
+            | QueryError::ExecutionError(ScalarCoercionError(pos, _, _, _)) => {
                 let mut location = HashMap::new();
                 location.insert("line", pos.line);
                 location.insert("column", pos.column);

@@ -1215,6 +1215,9 @@ fn create_call_filter_from_subgraph(manifest: &SubgraphManifest) -> Option<Ether
     let call_filter = manifest
         .data_sources
         .iter()
+        .filter(|data_source| {
+            data_source.source.address.is_some()
+        })
         .flat_map(|data_source| {
             let contract_addr = data_source.source.address;
             data_source
@@ -1223,7 +1226,7 @@ fn create_call_filter_from_subgraph(manifest: &SubgraphManifest) -> Option<Ether
                 .iter()
                 .map(move |call_handler| {
                     let sig = keccak256(call_handler.function.as_bytes());
-                    (contract_addr, [sig[0], sig[1], sig[2], sig[3]])
+                    (contract_addr.unwrap(), [sig[0], sig[1], sig[2], sig[3]])
                 })
         })
         .collect::<EthereumCallFilter>();
@@ -1241,10 +1244,13 @@ fn create_block_filter_from_subgraph(manifest: &SubgraphManifest) -> Option<Ethe
             data_source
                 .mapping
                 .block_handler
-                .is_some()
+                .is_some() && data_source.
+                source.
+                address.
+                is_some()
         })
         .map(|data_source| {
-            data_source.source.address
+            data_source.source.address.unwrap()
         })
         .collect::<EthereumBlockFilter>();
     match block_filter.contract_addresses.len() {

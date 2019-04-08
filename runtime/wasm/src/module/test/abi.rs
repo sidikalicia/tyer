@@ -239,12 +239,18 @@ fn abi_store_value() {
     let new_value: Value = module.asc_get(new_value_ptr);
     assert_eq!(new_value, Value::Int(int));
 
-    // Value::Float
-    let float: f64 = 3.14159001;
-    let float_runtime = RuntimeValue::F64(F64::from_float(float));
-    let new_value_ptr = module.takes_val_returns_ptr("value_from_float", float_runtime);
+    // Value::BigDecimal
+    let big_decimal = BigDecimal::from_str("3.14159001").unwrap();
+    let big_decimal_ptr = module.asc_new(&big_decimal);
+    let new_value_ptr = module.takes_ptr_returns_ptr("value_from_big_decimal", big_decimal_ptr);
     let new_value: Value = module.asc_get(new_value_ptr);
-    assert_eq!(new_value, Value::Float(float));
+    assert_eq!(new_value, Value::BigDecimal(big_decimal));
+
+    let big_decimal = BigDecimal::new(10.into(), -5);
+    let big_decimal_ptr = module.asc_new(&big_decimal);
+    let new_value_ptr = module.takes_ptr_returns_ptr("value_from_big_decimal", big_decimal_ptr);
+    let new_value: Value = module.asc_get(new_value_ptr);
+    assert_eq!(new_value, Value::BigDecimal(1_000_000.into()));
 
     // Value::Bool
     let boolean = true;
@@ -261,7 +267,10 @@ fn abi_store_value() {
         .clone()
         .invoke_export(
             "array_from_values",
-            &[RuntimeValue::from(module.asc_new(string)), float_runtime],
+            &[
+                RuntimeValue::from(module.asc_new(string)),
+                RuntimeValue::from(int),
+            ],
             &mut module,
         )
         .expect("call failed")
@@ -271,7 +280,7 @@ fn abi_store_value() {
     let new_value: Value = module.asc_get(new_value_ptr);
     assert_eq!(
         new_value,
-        Value::List(vec![Value::from(string), Value::Float(float)])
+        Value::List(vec![Value::from(string), Value::Int(int)])
     );
 
     let array: &[Value] = &[
@@ -364,6 +373,20 @@ fn abi_big_int() {
     assert_eq!(new_uint, BigInt::from(-49 as i32));
     let new_uint_from_u256 = BigInt::from_signed_u256(&new_uint.to_signed_u256());
     assert_eq!(new_uint, new_uint_from_u256);
+}
+
+#[test]
+fn big_int_to_string() {
+    let valid_module = test_valid_module(mock_data_source("wasm_test/big_int_to_string.wasm"));
+    let mut module =
+        WasmiModule::from_valid_module_with_ctx(&valid_module, mock_context()).unwrap();
+
+    let big_int_str = "30145144166666665000000000000000000";
+    let big_int = BigInt::from_str(big_int_str).unwrap();
+    let ptr: AscPtr<AscBigInt> = module.asc_new(&big_int);
+    let string_obj: AscPtr<AscString> = module.takes_ptr_returns_ptr("big_int_to_string", ptr);
+    let string: String = module.asc_get(string_obj);
+    assert_eq!(string, big_int_str);
 }
 
 // This should panic rather than exhibiting UB. It's hard to test for UB, but

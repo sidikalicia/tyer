@@ -1,3 +1,6 @@
+use futures::sync::mpsc::{channel, Sender};
+use futures::sync::oneshot;
+use semver::{Version, VersionReq};
 use std::thread;
 use std::time::Instant;
 
@@ -14,8 +17,6 @@ use graph::web3::types::{Log, Transaction};
 use super::MappingContext;
 use crate::module::{ValidModule, WasmiModule, WasmiModuleConfig};
 
-use futures::sync::mpsc::{channel, Sender};
-use futures::sync::oneshot;
 use tiny_keccak::keccak256;
 
 pub struct RuntimeHostConfig {
@@ -147,6 +148,15 @@ impl RuntimeHost {
             "data_source" => config.data_source.name.clone(),
         ));
 
+        let api_version = Version::parse(&config.data_source.mapping.api_version)?;
+        if !VersionReq::parse("<= 0.0.2").unwrap().matches(&api_version) {
+            return Err(format_err!(
+                "This Graph Node only supports mapping API versions <= 0.0.2, but subgraph `{}` uses `{}`",
+                config.subgraph_id,
+                api_version
+            ));
+        }
+
         // Create channel for canceling the module
         let (cancel_sender, cancel_receiver) = oneshot::channel();
 
@@ -258,7 +268,10 @@ impl RuntimeHost {
                         .map_err(|_| err_msg("WASM module result receiver dropped."))
                 })
                 .wait()
-                .ok();
+                .unwrap_or_else(|e| {
+                    debug!(module_logger, "WASM runtime thread terminating"; 
+                           "reason" => e.to_string())
+                });
         }).expect("Spawning WASM runtime thread failed.");
         Ok(RuntimeHost {
             data_source_name,
@@ -273,7 +286,7 @@ impl RuntimeHost {
     }
 
     fn matches_call_address(&self, call: &EthereumCall) -> bool {
-        self.data_source_contract.address == call.to
+        self.data_source_contract.address.unwrap_or_default() == call.to
     }
 
     fn matches_call_function(&self, call: &EthereumCall) -> bool {
@@ -288,7 +301,12 @@ impl RuntimeHost {
     }
 
     fn matches_log_address(&self, log: &Log) -> bool {
-        self.data_source_contract.address == log.address
+        // The runtime host matches the contract address of the `Log`
+        // if the data source contains the same contract address or
+        // if the data source doesn't have a contract address at all
+        self.data_source_contract
+            .address
+            .map_or(true, |addr| addr == log.address)
     }
 
     fn matches_log_signature(&self, log: &Log) -> bool {
@@ -636,11 +654,12 @@ impl RuntimeHostTrait for RuntimeHost {
                 )
             })
             .and_then(|_| {
-                result_receiver.map_err(move |_| {
+                result_receiver.map_err(move |e| {
                     format_err!(
                         "Mapping terminated before finishing to handle \
-                         Ethereum event: {}",
+                         Ethereum event {}: {}",
                         event_signature,
+                        e
                     )
                 })
             })

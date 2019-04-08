@@ -1,9 +1,8 @@
-use graphql_parser::schema::*;
+use crate::schema::ast;
+use graph::prelude::*;
+use graphql_parser::schema::{Value, *};
 use graphql_parser::Pos;
 use inflector::Inflector;
-use std::iter::IntoIterator;
-
-use crate::schema::ast;
 
 #[derive(Fail, Debug)]
 pub enum APISchemaError {
@@ -38,7 +37,17 @@ pub fn api_schema(input_schema: &Document) -> Result<Document, APISchemaError> {
 
 /// Adds built-in GraphQL scalar types (`Int`, `String` etc.) to the schema.
 fn add_builtin_scalar_types(schema: &mut Document) -> Result<(), APISchemaError> {
-    for name in ["Boolean", "ID", "Int", "Float", "String", "Bytes", "BigInt"].into_iter() {
+    for name in [
+        "Boolean",
+        "ID",
+        "Int",
+        "BigDecimal",
+        "String",
+        "Bytes",
+        "BigInt",
+    ]
+    .into_iter()
+    {
         match ast::get_named_type(schema, &name.to_string()) {
             None => {
                 let typedef = TypeDefinition::Scalar(ScalarType {
@@ -217,7 +226,7 @@ fn field_scalar_filter_input_values(
         "BigInt" => vec!["", "not", "gt", "lt", "gte", "lte", "in", "not_in"],
         "Boolean" => vec!["", "not", "in", "not_in"],
         "Bytes" => vec!["", "not", "in", "not_in", "contains", "not_contains"],
-        "Float" => vec!["", "not", "gt", "lt", "gte", "lte", "in", "not_in"],
+        "BigDecimal" => vec!["", "not", "gt", "lt", "gte", "lte", "in", "not_in"],
         "ID" => vec!["", "not", "gt", "lt", "gte", "lte", "in", "not_in"],
         "Int" => vec!["", "not", "gt", "lt", "gte", "lte", "in", "not_in"],
         "List" => vec!["", "not", "in", "not_in", "contains", "not_contains"],
@@ -408,16 +417,18 @@ fn collection_arguments_for_named_type(
     input_objects: &[InputObjectType],
     type_name: &Name,
 ) -> Vec<InputValue> {
+    // `first` and `skip` should be non-nullable, but the Apollo graphql client
+    // exhibts non-conforming behaviour by erroing if no value is provided for a
+    // non-nullable field, regardless of the presence of a default.
     let mut skip = input_value(&"skip".to_string(), "", Type::NamedType("Int".to_string()));
     skip.default_value = Some(Value::Int(0.into()));
 
+    let mut first = input_value(&"first".to_string(), "", Type::NamedType("Int".to_string()));
+    first.default_value = Some(Value::Int(100.into()));
+
     let mut args = vec![
         skip,
-        input_value(
-            &"first".to_string(),
-            "",
-            Type::NonNullType(Box::new(Type::NamedType("Int".to_string()))),
-        ),
+        first,
         input_value(
             &"orderBy".to_string(),
             "",
@@ -540,8 +551,8 @@ mod tests {
         ast::get_named_type(&schema, &"ID".to_string()).expect("ID type is missing in API schema");
         ast::get_named_type(&schema, &"Int".to_string())
             .expect("Int type is missing in API schema");
-        ast::get_named_type(&schema, &"Float".to_string())
-            .expect("Float type is missing in API schema");
+        ast::get_named_type(&schema, &"BigDecimal".to_string())
+            .expect("BigDecimal type is missing in API schema");
         ast::get_named_type(&schema, &"String".to_string())
             .expect("String type is missing in API schema");
     }

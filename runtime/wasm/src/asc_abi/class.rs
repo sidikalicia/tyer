@@ -342,7 +342,7 @@ impl AscValue for EthereumValueKind {}
 pub enum StoreValueKind {
     String,
     Int,
-    Float,
+    BigDecimal,
     Bool,
     Array,
     Null,
@@ -357,7 +357,7 @@ impl StoreValueKind {
         match value {
             Value::String(_) => StoreValueKind::String,
             Value::Int(_) => StoreValueKind::Int,
-            Value::Float(_) => StoreValueKind::Float,
+            Value::BigDecimal(_) => StoreValueKind::BigDecimal,
             Value::Bool(_) => StoreValueKind::Bool,
             Value::List(_) => StoreValueKind::Array,
             Value::Null => StoreValueKind::Null,
@@ -429,13 +429,29 @@ pub(crate) struct AscEthereumTransaction {
 
 #[repr(C)]
 #[derive(AscType)]
-pub(crate) struct AscEthereumEvent {
+pub(crate) struct AscEthereumTransaction_0_0_2 {
+    pub hash: AscPtr<AscH256>,
+    pub index: AscPtr<AscBigInt>,
+    pub from: AscPtr<AscH160>,
+    pub to: AscPtr<AscH160>,
+    pub value: AscPtr<AscBigInt>,
+    pub gas_used: AscPtr<AscBigInt>,
+    pub gas_price: AscPtr<AscBigInt>,
+    pub input: AscPtr<Bytes>,
+}
+
+#[repr(C)]
+#[derive(AscType)]
+pub(crate) struct AscEthereumEvent<T>
+where
+    T: AscType,
+{
     pub address: AscPtr<AscAddress>,
     pub log_index: AscPtr<AscBigInt>,
     pub transaction_log_index: AscPtr<AscBigInt>,
     pub log_type: AscPtr<AscString>,
     pub block: AscPtr<AscEthereumBlock>,
-    pub transaction: AscPtr<AscEthereumTransaction>,
+    pub transaction: AscPtr<T>,
     pub params: AscPtr<AscLogParamArray>,
 }
 
@@ -508,4 +524,13 @@ impl JsonValueKind {
             Value::Object(_) => JsonValueKind::Object,
         }
     }
+}
+
+#[repr(C)]
+#[derive(AscType)]
+pub(crate) struct AscBigDecimal {
+    pub digits: AscPtr<AscBigInt>,
+
+    // Decimal exponent. This is the opposite of `scale` in rust BigDecimal.
+    pub exp: AscPtr<AscBigInt>,
 }

@@ -1,9 +1,5 @@
 #[macro_use]
 extern crate pretty_assertions;
-extern crate futures;
-extern crate graph;
-extern crate graph_graphql;
-extern crate graphql_parser;
 
 use graphql_parser::{query as q, schema as s};
 use std::collections::{BTreeMap, HashMap};
@@ -31,7 +27,8 @@ impl Resolver for MockResolver {
     fn resolve_object(
         &self,
         _parent: &Option<q::Value>,
-        _field: &q::Name,
+        _field: &q::Field,
+        _field_definition: &s::Field,
         _object_type: ObjectOrInterface<'_>,
         _arguments: &HashMap<&q::Name, q::Value>,
         _types_for_interface: &BTreeMap<Name, Vec<ObjectType>>,
@@ -45,8 +42,9 @@ impl Resolver for MockResolver {
 fn mock_schema() -> Schema {
     Schema::parse(
         "
-             scalar String
              scalar ID
+             scalar Int
+             scalar String
 
              directive @language(
                language: String = \"English\"
@@ -54,7 +52,7 @@ fn mock_schema() -> Schema {
 
              enum Role {
                USER
-              ADMIN
+               ADMIN
              }
 
              interface Node {
@@ -73,12 +71,13 @@ fn mock_schema() -> Schema {
              }
 
              input User_filter {
-               name_eq: String,
+               name_eq: String = \"default name\",
                name_not: String,
              }
 
              type Query @entity {
                allUsers(orderBy: User_orderBy, filter: User_filter): [User!]
+               anyUserWithAge(age: Int = 99): User
                User: User
              }
              ",
@@ -104,6 +103,17 @@ fn expected_mock_schema_introspection() -> q::Value {
     let id_type = object_value(vec![
         ("kind", q::Value::Enum("SCALAR".to_string())),
         ("name", q::Value::String("ID".to_string())),
+        ("description", q::Value::Null),
+        ("fields", q::Value::Null),
+        ("inputFields", q::Value::Null),
+        ("enumValues", q::Value::Null),
+        ("interfaces", q::Value::Null),
+        ("possibleTypes", q::Value::Null),
+    ]);
+
+    let int_type = object_value(vec![
+        ("kind", q::Value::Enum("SCALAR".to_string())),
+        ("name", q::Value::String("Int".to_string())),
         ("description", q::Value::Null),
         ("fields", q::Value::Null),
         ("inputFields", q::Value::Null),
@@ -219,7 +229,10 @@ fn expected_mock_schema_introspection() -> q::Value {
                 object_value(vec![
                     ("name", q::Value::String("name_eq".to_string())),
                     ("description", q::Value::Null),
-                    ("defaultValue", q::Value::Null),
+                    (
+                        "defaultValue",
+                        q::Value::String("\"default name\"".to_string()),
+                    ),
                     (
                         "type",
                         object_value(vec![
@@ -404,6 +417,36 @@ fn expected_mock_schema_introspection() -> q::Value {
                     ("deprecationReason", q::Value::Null),
                 ]),
                 object_value(vec![
+                    ("name", q::Value::String("anyUserWithAge".to_string())),
+                    ("description", q::Value::Null),
+                    (
+                        "args",
+                        q::Value::List(vec![object_value(vec![
+                            ("defaultValue", q::Value::String("99".to_string())),
+                            ("description", q::Value::Null),
+                            ("name", q::Value::String("age".to_string())),
+                            (
+                                "type",
+                                object_value(vec![
+                                    ("kind", q::Value::Enum("SCALAR".to_string())),
+                                    ("name", q::Value::String("Int".to_string())),
+                                    ("ofType", q::Value::Null),
+                                ]),
+                            ),
+                        ])]),
+                    ),
+                    (
+                        "type",
+                        object_value(vec![
+                            ("kind", q::Value::Enum("OBJECT".to_string())),
+                            ("name", q::Value::String("User".to_string())),
+                            ("ofType", q::Value::Null),
+                        ]),
+                    ),
+                    ("isDeprecated", q::Value::Boolean(false)),
+                    ("deprecationReason", q::Value::Null),
+                ]),
+                object_value(vec![
                     ("name", q::Value::String("User".to_string())),
                     ("description", q::Value::Null),
                     ("args", q::Value::List(vec![])),
@@ -428,6 +471,7 @@ fn expected_mock_schema_introspection() -> q::Value {
 
     let expected_types = q::Value::List(vec![
         id_type,
+        int_type,
         node_type,
         query_type,
         role_type,
@@ -449,7 +493,7 @@ fn expected_mock_schema_introspection() -> q::Value {
             q::Value::List(vec![object_value(vec![
                 ("name", q::Value::String("language".to_string())),
                 ("description", q::Value::Null),
-                ("defaultValue", q::Value::String("English".to_string())),
+                ("defaultValue", q::Value::String("\"English\"".to_string())),
                 (
                     "type",
                     object_value(vec![

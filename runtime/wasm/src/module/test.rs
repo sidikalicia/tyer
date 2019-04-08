@@ -107,7 +107,7 @@ fn test_valid_module(
     ValidModule::new(
         &logger,
         WasmiModuleConfig {
-            subgraph_id: SubgraphDeploymentId::new("testsubgraph").unwrap(),
+            subgraph_id: SubgraphDeploymentId::new("wasmModuleTest").unwrap(),
             data_source,
             ethereum_adapter: mock_ethereum_adapter,
             link_resolver: Arc::new(ipfs_api::IpfsClient::default()),
@@ -126,7 +126,7 @@ fn mock_data_source(path: &str) -> DataSource {
         name: String::from("example data source"),
         network: Some(String::from("mainnet")),
         source: Source {
-            address: Address::from_str("0123123123012312312301231231230123123123").unwrap(),
+            address: Some(Address::from_str("0123123123012312312301231231230123123123").unwrap()),
             abi: String::from("123123"),
         },
         mapping: Mapping {

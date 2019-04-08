@@ -6,64 +6,24 @@ extern crate graph;
 extern crate graph_store_postgres;
 extern crate hex;
 
-use crate::tokio::runtime::Runtime;
 use diesel::pg::PgConnection;
 use diesel::*;
-use std::env;
+use graphql_parser::schema as s;
 use std::str::FromStr;
-use std::sync::Mutex;
 use std::time::Duration;
+use test_store::*;
 
 use graph::components::store::{EntityFilter, EntityKey, EntityOrder, EntityQuery, EntityRange};
 use graph::data::store::scalar;
 use graph::data::subgraph::schema::SubgraphDeploymentEntity;
 use graph::prelude::*;
-use graph::util::log;
 use graph::web3::types::H256;
-use graph_store_postgres::{db_schema, Store as DieselStore, StoreConfig};
-
-/// Helper function to ensure and obtain the Postgres URL to use for testing.
-fn postgres_test_url() -> String {
-    std::env::var_os("THEGRAPH_STORE_POSTGRES_DIESEL_URL")
-        .expect("The THEGRAPH_STORE_POSTGRES_DIESEL_URL environment variable is not set")
-        .into_string()
-        .unwrap()
-}
+use graph_store_postgres::{db_schema, Store as DieselStore};
 
 lazy_static! {
-    static ref LOGGER:Logger = match env::var_os("GRAPH_LOG") {
-        Some(_) => log::logger(false),
-        None => Logger::root(slog::Discard, o!()),
-    };
-    // Create Store instance once for use with each of the tests
-    static ref STORE_MUTEX: Mutex<(Arc<DieselStore>, Runtime)> = {
-        let mut runtime = Runtime::new().unwrap();
-        let store = runtime.block_on(future::lazy(|| -> Result<_, ()> {
-            // Set up Store
-            let logger = &*LOGGER;
-            let postgres_url = postgres_test_url();
-            let net_identifiers = EthereumNetworkIdentifier {
-                net_version: "graph test suite".to_owned(),
-                genesis_block_hash: TEST_BLOCK_0_PTR.hash,
-            };
-            let network_name = "fake_network".to_owned();
-
-            Ok(Arc::new(DieselStore::new(
-                StoreConfig {
-                    postgres_url,
-                    network_name,
-                },
-                &logger,
-                net_identifiers,
-            )))
-        })).expect("could not create Diesel Store instance for test suite");
-
-        // Also return the tokio Runtime that should be used when interacting with this Store
-        Mutex::new((store, runtime))
-    };
-
+    static ref TEST_SUBGRAPH_ID_STRING: String = String::from("testsubgraph");
     static ref TEST_SUBGRAPH_ID: SubgraphDeploymentId =
-        SubgraphDeploymentId::new("testsubgraph").unwrap();
+        SubgraphDeploymentId::new(TEST_SUBGRAPH_ID_STRING.as_str()).unwrap();
     static ref TEST_BLOCK_0_PTR: EthereumBlockPointer = (
         H256::from("0xbd34884280958002c51d3f7b5f853e6febeba33de0f40d15b0363006533c924f"),
         0u64
@@ -114,15 +74,15 @@ where
     R::Error: Send + Debug,
     R::Future: Send,
 {
-    // Lock regardless of poisoning.
-    let mut guard = match STORE_MUTEX.lock() {
+    let store = STORE.clone();
+
+    // Lock regardless of poisoning. This also forces sequential test execution.
+    let mut runtime = match STORE_RUNTIME.lock() {
         Ok(guard) => guard,
         Err(err) => err.into_inner(),
     };
-    let (ref store_ref, ref mut runtime_ref) = *guard;
-    let store = store_ref.clone();
 
-    runtime_ref
+    runtime
         .block_on(future::lazy(move || {
             // Reset state before starting
             remove_test_data();
@@ -247,7 +207,11 @@ fn create_test_entity(
     test_entity.insert("bin_name".to_owned(), Value::Bytes(bin_name));
     test_entity.insert("email".to_owned(), Value::String(email.to_owned()));
     test_entity.insert("age".to_owned(), Value::Int(age));
-    test_entity.insert("weight".to_owned(), Value::Float(weight));
+    test_entity.insert(
+        "seconds_age".to_owned(),
+        Value::BigInt(BigInt::from(age) * 31557600.into()),
+    );
+    test_entity.insert("weight".to_owned(), Value::BigDecimal(weight.into()));
     test_entity.insert("coffee".to_owned(), Value::Bool(coffee));
     test_entity.insert(
         "favorite_color".to_owned(),
@@ -335,7 +299,11 @@ fn get_entity_1() {
         );
         expected_entity.insert("email".to_owned(), "tonofjohn@email.com".into());
         expected_entity.insert("age".to_owned(), Value::Int(67 as i32));
-        expected_entity.insert("weight".to_owned(), Value::Float(184.4));
+        expected_entity.insert(
+            "seconds_age".to_owned(),
+            Value::BigInt(BigInt::from(2114359200)),
+        );
+        expected_entity.insert("weight".to_owned(), Value::BigDecimal(184.4.into()));
         expected_entity.insert("coffee".to_owned(), Value::Bool(false));
         // favorite_color was null, so we expect the property to be omitted
 
@@ -368,7 +336,11 @@ fn get_entity_3() {
         );
         expected_entity.insert("email".to_owned(), "teeko@email.com".into());
         expected_entity.insert("age".to_owned(), Value::Int(28 as i32));
-        expected_entity.insert("weight".to_owned(), Value::Float(111.7));
+        expected_entity.insert(
+            "seconds_age".to_owned(),
+            Value::BigInt(BigInt::from(883612800)),
+        );
+        expected_entity.insert("weight".to_owned(), Value::BigDecimal(111.7.into()));
         expected_entity.insert("coffee".to_owned(), Value::Bool(false));
         // favorite_color was later set to null, so we expect the property to be omitted
 
@@ -767,7 +739,7 @@ fn find_float_equal() {
             entity_types: vec!["user".to_owned()],
             filter: Some(EntityFilter::And(vec![EntityFilter::Equal(
                 "weight".to_owned(),
-                Value::Float(184.4),
+                Value::BigDecimal(184.4.into()),
             )])),
             order_by: None,
             order_direction: None,
@@ -785,7 +757,7 @@ fn find_float_not_equal() {
             entity_types: vec!["user".to_owned()],
             filter: Some(EntityFilter::And(vec![EntityFilter::Not(
                 "weight".to_owned(),
-                Value::Float(184.4),
+                Value::BigDecimal(184.4.into()),
             )])),
             order_by: Some(("name".to_owned(), ValueType::String)),
             order_direction: Some(EntityOrder::Descending),
@@ -803,7 +775,7 @@ fn find_float_greater_than() {
             entity_types: vec!["user".to_owned()],
             filter: Some(EntityFilter::And(vec![EntityFilter::GreaterThan(
                 "weight".to_owned(),
-                Value::Float(160.0),
+                Value::BigDecimal(160.0.into()),
             )])),
             order_by: None,
             order_direction: None,
@@ -821,7 +793,7 @@ fn find_float_less_than() {
             entity_types: vec!["user".to_owned()],
             filter: Some(EntityFilter::And(vec![EntityFilter::LessThan(
                 "weight".to_owned(),
-                Value::Float(160.0),
+                Value::BigDecimal(160.0.into()),
             )])),
             order_by: Some(("name".to_owned(), ValueType::String)),
             order_direction: Some(EntityOrder::Ascending),
@@ -839,7 +811,7 @@ fn find_float_less_than_order_by_desc() {
             entity_types: vec!["user".to_owned()],
             filter: Some(EntityFilter::And(vec![EntityFilter::LessThan(
                 "weight".to_owned(),
-                Value::Float(160.0),
+                Value::BigDecimal(160.0.into()),
             )])),
             order_by: Some(("name".to_owned(), ValueType::String)),
             order_direction: Some(EntityOrder::Descending),
@@ -857,7 +829,7 @@ fn find_float_less_than_range() {
             entity_types: vec!["user".to_owned()],
             filter: Some(EntityFilter::And(vec![EntityFilter::LessThan(
                 "weight".to_owned(),
-                Value::Float(161.0),
+                Value::BigDecimal(161.0.into()),
             )])),
             order_by: Some(("name".to_owned(), ValueType::String)),
             order_direction: Some(EntityOrder::Descending),
@@ -878,7 +850,10 @@ fn find_float_in() {
             entity_types: vec!["user".to_owned()],
             filter: Some(EntityFilter::And(vec![EntityFilter::In(
                 "weight".to_owned(),
-                vec![Value::Float(184.4), Value::Float(111.7)],
+                vec![
+                    Value::BigDecimal(184.4.into()),
+                    Value::BigDecimal(111.7.into()),
+                ],
             )])),
             order_by: Some(("name".to_owned(), ValueType::String)),
             order_direction: Some(EntityOrder::Descending),
@@ -896,7 +871,10 @@ fn find_float_not_in() {
             entity_types: vec!["user".to_owned()],
             filter: Some(EntityFilter::And(vec![EntityFilter::NotIn(
                 "weight".to_owned(),
-                vec![Value::Float(184.4), Value::Float(111.7)],
+                vec![
+                    Value::BigDecimal(184.4.into()),
+                    Value::BigDecimal(111.7.into()),
+                ],
             )])),
             order_by: Some(("name".to_owned(), ValueType::String)),
             order_direction: Some(EntityOrder::Descending),
@@ -1237,7 +1215,7 @@ fn find_order_by_float() {
             subgraph_id: TEST_SUBGRAPH_ID.clone(),
             entity_types: vec!["user".to_owned()],
             filter: None,
-            order_by: Some(("weight".to_owned(), ValueType::Float)),
+            order_by: Some(("weight".to_owned(), ValueType::BigDecimal)),
             order_direction: Some(EntityOrder::Ascending),
             range: EntityRange::first(100),
         },
@@ -1248,7 +1226,7 @@ fn find_order_by_float() {
             subgraph_id: TEST_SUBGRAPH_ID.clone(),
             entity_types: vec!["user".to_owned()],
             filter: None,
-            order_by: Some(("weight".to_owned(), ValueType::Float)),
+            order_by: Some(("weight".to_owned(), ValueType::BigDecimal)),
             order_direction: Some(EntityOrder::Descending),
             range: EntityRange::first(100),
         },
@@ -1879,4 +1857,45 @@ fn throttle_subscription_throttles() {
             )
         },
     )
+}
+
+#[test]
+fn subgraph_schema_types_have_subgraph_id_directive() {
+    run_test(|store| -> Result<(), ()> {
+        let schema = store
+            .subgraph_schema(&TEST_SUBGRAPH_ID)
+            .expect("test subgraph should have a schema");
+        for typedef in schema
+            .document
+            .definitions
+            .iter()
+            .filter_map(|def| match def {
+                s::Definition::TypeDefinition(typedef) => Some(typedef),
+                _ => None,
+            })
+        {
+            // Verify that all types have a @subgraphId directive on them
+            let directive = match typedef {
+                s::TypeDefinition::Object(t) => &t.directives,
+                s::TypeDefinition::Interface(t) => &t.directives,
+                s::TypeDefinition::Enum(t) => &t.directives,
+                s::TypeDefinition::Scalar(t) => &t.directives,
+                s::TypeDefinition::Union(t) => &t.directives,
+                s::TypeDefinition::InputObject(t) => &t.directives,
+            }
+            .iter()
+            .find(|directive| directive.name == "subgraphId")
+            .expect("all subgraph schema types should have a @subgraphId directive");
+
+            // Verify that all @subgraphId directives match the subgraph
+            assert_eq!(
+                directive.arguments,
+                [(
+                    String::from("id"),
+                    s::Value::String(TEST_SUBGRAPH_ID_STRING.to_string())
+                )]
+            );
+        }
+        Ok(())
+    })
 }

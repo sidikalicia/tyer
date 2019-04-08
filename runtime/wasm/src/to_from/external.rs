@@ -3,12 +3,12 @@ use std::collections::HashMap;
 
 use graph::components::ethereum::{EthereumBlockData, EthereumEventData, EthereumCallData, EthereumTransactionData};
 use graph::data::store;
-use graph::prelude::BigInt;
+use graph::prelude::{BigDecimal, BigInt};
 use graph::serde_json;
 use graph::web3::types as web3;
 
 use crate::asc_abi::class::*;
-use crate::asc_abi::{AscHeap, AscPtr, FromAscObj, ToAscObj};
+use crate::asc_abi::{AscHeap, AscPtr, AscType, FromAscObj, ToAscObj};
 
 use crate::UnresolvedContractCall;
 
@@ -55,6 +55,25 @@ impl FromAscObj<AscBigInt> for BigInt {
     fn from_asc_obj<H: AscHeap>(array_buffer: AscBigInt, heap: &H) -> Self {
         let bytes = <Vec<u8>>::from_asc_obj(array_buffer, heap);
         BigInt::from_signed_bytes_le(&bytes)
+    }
+}
+
+impl ToAscObj<AscBigDecimal> for BigDecimal {
+    fn to_asc_obj<H: AscHeap>(&self, heap: &mut H) -> AscBigDecimal {
+        // From the docs: "Note that a positive exponent indicates a negative power of 10",
+        // so "exponent" is the opposite of what you'd expect.
+        let (digits, negative_exp) = self.as_bigint_and_exponent();
+        AscBigDecimal {
+            exp: heap.asc_new(&BigInt::from(-negative_exp)),
+            digits: heap.asc_new(&BigInt::from(digits)),
+        }
+    }
+}
+
+impl FromAscObj<AscBigDecimal> for BigDecimal {
+    fn from_asc_obj<H: AscHeap>(big_decimal: AscBigDecimal, heap: &H) -> Self {
+        heap.asc_get::<BigInt, _>(big_decimal.digits)
+            .to_big_decimal(heap.asc_get(big_decimal.exp))
     }
 }
 
@@ -145,7 +164,10 @@ impl FromAscObj<AscEnum<StoreValueKind>> for store::Value {
                 Value::String(heap.asc_get(ptr))
             }
             StoreValueKind::Int => Value::Int(i32::from(payload)),
-            StoreValueKind::Float => Value::Float(f64::from(payload)),
+            StoreValueKind::BigDecimal => {
+                let ptr: AscPtr<AscBigDecimal> = AscPtr::from(payload);
+                Value::BigDecimal(heap.asc_get(ptr))
+            }
             StoreValueKind::Bool => Value::Bool(bool::from(payload)),
             StoreValueKind::Array => {
                 let ptr: AscEnumArray<StoreValueKind> = AscPtr::from(payload);
@@ -173,7 +195,7 @@ impl ToAscObj<AscEnum<StoreValueKind>> for store::Value {
         let payload = match self {
             Value::String(string) => heap.asc_new(string.as_str()).into(),
             Value::Int(n) => EnumPayload::from(*n),
-            Value::Float(n) => EnumPayload::from(*n),
+            Value::BigDecimal(n) => heap.asc_new(n).into(),
             Value::Bool(b) => EnumPayload::from(*b),
             Value::List(array) => heap.asc_new(array.as_slice()).into(),
             Value::Null => EnumPayload(0),
@@ -290,8 +312,29 @@ impl ToAscObj<AscEthereumTransaction> for EthereumTransactionData {
     }
 }
 
-impl ToAscObj<AscEthereumEvent> for EthereumEventData {
-    fn to_asc_obj<H: AscHeap>(&self, heap: &mut H) -> AscEthereumEvent {
+impl ToAscObj<AscEthereumTransaction_0_0_2> for EthereumTransactionData {
+    fn to_asc_obj<H: AscHeap>(&self, heap: &mut H) -> AscEthereumTransaction_0_0_2 {
+        AscEthereumTransaction_0_0_2 {
+            hash: heap.asc_new(&self.hash),
+            index: heap.asc_new(&BigInt::from(self.index)),
+            from: heap.asc_new(&self.from),
+            to: self
+                .to
+                .map(|to| heap.asc_new(&to))
+                .unwrap_or_else(|| AscPtr::null()),
+            value: heap.asc_new(&BigInt::from_unsigned_u256(&self.value)),
+            gas_used: heap.asc_new(&BigInt::from_unsigned_u256(&self.gas_used)),
+            gas_price: heap.asc_new(&BigInt::from_unsigned_u256(&self.gas_price)),
+            input: heap.asc_new(&*self.input.0),
+        }
+    }
+}
+
+impl<T: AscType> ToAscObj<AscEthereumEvent<T>> for EthereumEventData
+where
+    EthereumTransactionData: ToAscObj<T>,
+{
+    fn to_asc_obj<H: AscHeap>(&self, heap: &mut H) -> AscEthereumEvent<T> {
         AscEthereumEvent {
             address: heap.asc_new(&self.address),
             log_index: heap.asc_new(&BigInt::from_unsigned_u256(&self.log_index)),
@@ -303,7 +346,7 @@ impl ToAscObj<AscEthereumEvent> for EthereumEventData {
                 .map(|log_type| heap.asc_new(&log_type))
                 .unwrap_or_else(|| AscPtr::null()),
             block: heap.asc_new(&self.block),
-            transaction: heap.asc_new(&self.transaction),
+            transaction: heap.asc_new::<T, EthereumTransactionData>(&self.transaction),
             params: heap.asc_new(self.params.as_slice()),
         }
     }
