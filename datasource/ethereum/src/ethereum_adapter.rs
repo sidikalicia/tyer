@@ -235,7 +235,7 @@ where
         //
         // Our own filtering is performed later when the events are passed to
         // subgraphs and runtime hosts for processing:
-        // - At the top level in `SubgraphInstanceManager::start_subgraph`
+        // - At the top level in `BlockStreamContext::do_step`
         // - At the subgraph level in `SubgraphInstance::matches_log`
         // - At the data source level in `RuntimeHost::matches_log`
         let addresses = if log_filter
