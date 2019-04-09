@@ -1065,12 +1065,6 @@ where
     fn with_subgraph(mut self, manifest: &SubgraphManifest) -> Self {
         // Remember the parts of the manifest that we need for the stream
         self.deployment_id = Some(manifest.id.clone());
-        self.manifest_log_filter = Some(create_log_filter_from_subgraph(manifest));
-        self
-    }
-
-    fn with_data_sources(mut self, data_sources: &Vec<DataSource>) -> Self {
-        self.data_sources_log_filter = None;
         self
     }
 
@@ -1079,7 +1073,7 @@ where
         self
     }
 
-    fn build(&self) -> Self::Stream {
+    fn build(&self, log_filter: EthereumLogFilter) -> Self::Stream {
         // FIXME: Find better solutions for this, ideally guaranteed by the compiler
         let logger = self
             .logger
@@ -1087,10 +1081,6 @@ where
             .expect("Block stream built without logger");
         let deployment_id = self
             .deployment_id
-            .to_owned()
-            .expect("Block stream built without subgraph");
-        let manifest_log_filter = self
-            .manifest_log_filter
             .to_owned()
             .expect("Block stream built without subgraph");
 
@@ -1104,7 +1094,7 @@ where
             self.eth_adapter.clone(),
             self.node_id.clone(),
             deployment_id.clone(),
-            manifest_log_filter.clone(),
+            log_filter,
             self.reorg_threshold,
             logger,
         );
@@ -1121,22 +1111,4 @@ where
 
         block_stream
     }
-}
-
-fn create_log_filter_from_subgraph(manifest: &SubgraphManifest) -> EthereumLogFilter {
-    manifest
-        .data_sources
-        .iter()
-        .flat_map(|data_source| {
-            let contract_addr = data_source.source.address;
-            data_source
-                .mapping
-                .event_handlers
-                .iter()
-                .map(move |event_handler| {
-                    let event_sig = string_to_h256(&event_handler.event);
-                    (contract_addr, event_sig)
-                })
-        })
-        .collect::<EthereumLogFilter>()
 }

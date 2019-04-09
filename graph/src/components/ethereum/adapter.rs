@@ -8,6 +8,8 @@ use web3::error::Error as Web3Error;
 use web3::types::*;
 
 use super::types::*;
+use crate::prelude::DataSource;
+use crate::util::ethereum::string_to_h256;
 
 /// A collection of attributes that (kind of) uniquely identify an Ethereum blockchain.
 pub struct EthereumNetworkIdentifier {
@@ -127,6 +129,12 @@ impl EthereumLogFilter {
                 }),
         }
     }
+
+    /// Extends this log filter with another one.
+    pub fn extend(&mut self, other: EthereumLogFilter) {
+        self.contract_address_and_event_sig_pairs
+            .extend(other.contract_address_and_event_sig_pairs.iter());
+    }
 }
 
 impl FromIterator<(Option<Address>, H256)> for EthereumLogFilter {
@@ -137,6 +145,25 @@ impl FromIterator<(Option<Address>, H256)> for EthereumLogFilter {
         EthereumLogFilter {
             contract_address_and_event_sig_pairs: iter.into_iter().collect(),
         }
+    }
+}
+
+impl From<&Vec<DataSource>> for EthereumLogFilter {
+    fn from(data_sources: &Vec<DataSource>) -> Self {
+        data_sources
+            .iter()
+            .flat_map(|data_source| {
+                let contract_addr = data_source.source.address;
+                data_source
+                    .mapping
+                    .event_handlers
+                    .iter()
+                    .map(move |event_handler| {
+                        let event_sig = string_to_h256(&event_handler.event);
+                        (contract_addr, event_sig)
+                    })
+            })
+            .collect::<EthereumLogFilter>()
     }
 }
 

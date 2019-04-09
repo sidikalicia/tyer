@@ -51,15 +51,11 @@ impl BlockStreamBuilder for MockBlockStreamBuilder {
         self
     }
 
-    fn with_data_sources(self, _data_sources: &Vec<DataSource>) -> Self {
-        self
-    }
-
     fn with_logger(self, _logger: Logger) -> Self {
         self
     }
 
-    fn build(&self) -> Self::Stream {
+    fn build(&self, log_filter: EthereumLogFilter) -> Self::Stream {
         MockBlockStream::new()
     }
 }
