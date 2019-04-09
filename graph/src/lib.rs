@@ -97,7 +97,7 @@ pub mod prelude {
     };
     pub use crate::data::subgraph::schema::{SubgraphDeploymentEntity, TypedEntity};
     pub use crate::data::subgraph::{
-        CreateSubgraphResult, DataSource, Link, MappingABI, MappingEventHandler, MappingTransactionHandler,
+        CreateSubgraphResult, DataSource, Link, MappingABI, MappingEventHandler, MappingCallHandler,
         MappingBlockHandler, SubgraphAssignmentProviderError, SubgraphAssignmentProviderEvent, SubgraphDeploymentId, 
         SubgraphManifest, SubgraphManifestResolveError, SubgraphName, SubgraphRegistrarError,
         SubgraphManifestValidationError,

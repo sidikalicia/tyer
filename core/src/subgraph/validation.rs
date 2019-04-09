@@ -11,15 +11,15 @@ pub fn validate_manifest(manifest: SubgraphManifest) -> Result<SubgraphManifest,
                 .source
                 .address
                 .is_none();
-            let has_tx_handlers = data_source
+            let has_call_handlers = data_source
                 .mapping
-                .transaction_handlers
+                .call_handlers
                 .len() > 0;
             let has_block_handlers = data_source
                 .mapping
                 .block_handler
                 .is_some();
-            no_source_address && (has_tx_handlers || has_block_handlers)
+            no_source_address && (has_call_handlers || has_block_handlers)
         });
     if has_invalid_data_source {
         return Err(SubgraphRegistrarError::ManifestValidationError(

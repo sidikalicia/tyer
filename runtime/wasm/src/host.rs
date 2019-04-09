@@ -111,7 +111,7 @@ enum MappingTrigger {
         call: Arc<EthereumCall>,
         inputs: Vec<LogParam>,
         outputs: Vec<LogParam>,
-        handler: MappingTransactionHandler,
+        handler: MappingCallHandler,
     },
     Block {
         handler: MappingBlockHandler,
@@ -124,7 +124,7 @@ pub struct RuntimeHost {
     data_source_contract: Source,
     data_source_contract_abi: MappingABI,
     data_source_event_handlers: Vec<MappingEventHandler>,
-    data_source_call_handlers: Vec<MappingTransactionHandler>,
+    data_source_call_handlers: Vec<MappingCallHandler>,
     data_source_block_handler: Option<MappingBlockHandler>,
     mapping_request_sender: Sender<MappingRequest>,
     _guard: oneshot::Sender<()>,
@@ -176,7 +176,7 @@ impl RuntimeHost {
         let data_source_name = config.data_source.name.clone();
         let data_source_contract = config.data_source.source.clone();
         let data_source_event_handlers = config.data_source.mapping.event_handlers.clone();
-        let data_source_call_handlers = config.data_source.mapping.transaction_handlers.clone();
+        let data_source_call_handlers = config.data_source.mapping.call_handlers.clone();
         let data_source_block_handler = config.data_source.mapping.block_handler.clone();
         let data_source_contract_abi = config
             .data_source
@@ -340,7 +340,7 @@ impl RuntimeHost {
             })
     }
 
-    fn handler_for_call(&self, call: &Arc<EthereumCall>) -> Result<MappingTransactionHandler, Error> {
+    fn handler_for_call(&self, call: &Arc<EthereumCall>) -> Result<MappingCallHandler, Error> {
         // First four bytes of the input for the call are the first four bytes of hash of the function signature
         if call.input.0.len() < 4 {
             return Err(format_err!("Ethereum call has input with less than 4 bytes"))

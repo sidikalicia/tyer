@@ -1222,7 +1222,7 @@ fn create_call_filter_from_subgraph(manifest: &SubgraphManifest) -> Option<Ether
             let contract_addr = data_source.source.address;
             data_source
                 .mapping
-                .transaction_handlers
+                .call_handlers
                 .iter()
                 .map(move |call_handler| {
                     let sig = keccak256(call_handler.function.as_bytes());

@@ -466,7 +466,7 @@ struct EthereumContractMappingEntity {
     entities: Vec<String>,
     abis: Vec<EthereumContractAbiEntity>,
     block_handler: Option<EthereumBlockHandlerEntity>,
-    transaction_handlers: Vec<EthereumTransactionHandlerEntity>,
+    call_handlers: Vec<EthereumCallHandlerEntity>,
     event_handlers: Vec<EthereumContractEventHandlerEntity>,
 }
 
@@ -526,8 +526,8 @@ impl<'a> From<&'a super::Mapping> for EthereumContractMappingEntity {
             block_handler: mapping.block_handler
                 .clone()
                 .map(|block_handler| block_handler.into()),
-            transaction_handlers: mapping
-                .transaction_handlers
+            call_handlers: mapping
+                .call_handlers
                 .clone()
                 .into_iter()
                 .map(Into::into)
@@ -591,21 +591,21 @@ impl From<super::MappingBlockHandler> for EthereumBlockHandlerEntity {
 }
 
 #[derive(Debug)]
-struct EthereumTransactionHandlerEntity {
+struct EthereumCallHandlerEntity {
     function: String,
     handler: String,
 }
 
-impl TypedEntity for EthereumTransactionHandlerEntity {
-    const TYPENAME: &'static str = "EthereumTransactionHandlerEntity";
+impl TypedEntity for EthereumCallHandlerEntity {
+    const TYPENAME: &'static str = "EthereumCallHandlerEntity";
     type IdType = String;
 }
 
-impl From<super::MappingTransactionHandler> for EthereumTransactionHandlerEntity {
-    fn from(transaction_handler: super::MappingTransactionHandler) -> Self {
+impl From<super::MappingCallHandler> for EthereumCallHandlerEntity {
+    fn from(call_handler: super::MappingCallHandler) -> Self {
         Self {
-            function: transaction_handler.function,
-            handler: transaction_handler.handler,
+            function: call_handler.function,
+            handler: call_handler.handler,
         }
     }
 }

@@ -64,7 +64,7 @@ type EthereumContractMapping @entity {
     entities: [String!]!
     abis: [EthereumContractAbi!]!
     blockHandler: EthereumBlockHandler
-    transactionHandlers: [EthereumTransactionHandler!]
+    transactionHandlers: [EthereumCallHandler!]
     eventHandlers: [EthereumContractEventHandler!]
 }
 
@@ -78,7 +78,7 @@ type EthereumBlockHandler @entity {
     handler: String!
 }
 
-type EthereumTransactionHandler @entity {
+type EthereumCallHandler @entity {
     function: String!
     handler: String!
 }
