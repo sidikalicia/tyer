@@ -36,3 +36,16 @@ pub(crate) struct MappingContext {
     block: Arc<EthereumBlock>,
     entity_operations: Vec<EntityOperation>,
 }
+
+/// Cloning an `EventHandlerContext` clones all its fields,
+/// except the `entity_operations`, since they are an output
+/// accumulator and are therefore initialized with an empty `Vec`
+impl Clone for MappingContext {
+    fn clone(&self) -> Self {
+        Self {
+            logger: self.logger.clone(),
+            block: self.block.clone(),
+            entity_operations: Vec::new(),
+        }
+    }
+}

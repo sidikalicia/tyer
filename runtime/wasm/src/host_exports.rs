@@ -4,6 +4,7 @@ use ethabi::Token;
 use futures::sync::oneshot;
 use graph::components::ethereum::*;
 use graph::components::store::EntityKey;
+use graph::data::store;
 use graph::prelude::*;
 use graph::serde_json;
 use graph::web3::types::H160;
@@ -13,6 +14,8 @@ use std::fmt;
 use std::ops::Deref;
 use std::str::FromStr;
 use std::time::{Duration, Instant};
+
+use crate::module::WasmiModule;
 
 pub(crate) const TIMEOUT_ENV_VAR: &str = "GRAPH_MAPPING_HANDLER_TIMEOUT";
 
@@ -26,6 +29,12 @@ pub(crate) struct HostExportError<E>(pub(crate) E);
 impl<E: fmt::Display> fmt::Display for HostExportError<E> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}", self.0)
+    }
+}
+
+impl From<graph::prelude::Error> for HostExportError<String> {
+    fn from(e: graph::prelude::Error) -> Self {
+        HostExportError(e.to_string())
     }
 }
 
@@ -44,7 +53,7 @@ where
     E: EthereumAdapter,
     L: LinkResolver,
     S: Store + Send + Sync,
-    U: Sink<SinkItem = Box<Future<Item = (), Error = ()> + Send>> + Clone,
+    U: Sink<SinkItem = Box<Future<Item = (), Error = ()> + Send>> + Clone + Send + Sync + 'static,
 {
     pub(crate) fn new(
         subgraph_id: SubgraphDeploymentId,
@@ -332,6 +341,71 @@ where
                 .cat(&Link { link })
                 .map_err(HostExportError),
         )
+    }
+
+    // Read the IPFS file `link`, split it into JSON objects, and invoke
+    // the exported function `callback` on each JSON object. The successful
+    // return value contains all entity operations that were produced by the
+    // callback invocations. Each invocation of `callback` happens in its own
+    // instance of a WASM module, which is identical to `module` when it was
+    // first started. The signature of the callback must be
+    // `callback(JSONValue, Value)`, and the `userData` parameter is passed
+    // to the callback without any changes
+    pub(crate) fn ipfs_map(
+        &self,
+        module: &WasmiModule<E, L, S, U>,
+        link: String,
+        callback: &str,
+        user_data: store::Value,
+        flags: Vec<String>,
+    ) -> Result<Vec<EntityOperation>, HostExportError<impl ExportError>> {
+        const JSON_FLAG: &str = "json";
+        if !flags.contains(&JSON_FLAG.to_string()) {
+            return Err(HostExportError(format!("Flags must contain 'json'")));
+        }
+
+        let valid_module = module.valid_module.clone();
+        let ctx = module.ctx.clone();
+        let callback = callback.to_owned();
+        // Create a base error message to avoid borrowing headaches
+        let errmsg = format!(
+            "ipfs_map: callback '{}' failed when processing file '{}'",
+            &*callback, &link
+        );
+
+        let start = Instant::now();
+        let mut last_log = Instant::now();
+        let logger = ctx.logger.new(o!("ipfs_map" => link.clone()));
+        let operations = self.block_on(
+            self.link_resolver
+                .json_stream(&Link { link })
+                .and_then(move |stream| {
+                    stream
+                        .and_then(move |sv| {
+                            let module = WasmiModule::from_valid_module_with_ctx(
+                                valid_module.clone(),
+                                ctx.clone(),
+                            )?;
+                            let result =
+                                module.handle_json_callback(&*callback, &sv.value, &user_data);
+                            // Log progress every 15s
+                            if last_log.elapsed() > Duration::from_secs(15) {
+                                debug!(
+                                    logger,
+                                    "Processed {} lines in {}s so far",
+                                    sv.line,
+                                    start.elapsed().as_secs()
+                                );
+                                last_log = Instant::now();
+                            }
+                            result
+                        })
+                        .collect()
+                })
+                .map_err(move |e| HostExportError(format!("{}: {}", errmsg, e.to_string()))),
+        )?;
+        // Collect all results into one Vec
+        Ok(operations.into_iter().flatten().collect())
     }
 
     /// Expects a decimal string.

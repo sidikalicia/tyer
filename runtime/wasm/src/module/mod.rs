@@ -12,6 +12,7 @@ use wasmi::{
 use crate::host_exports::{self, HostExportError, HostExports};
 use crate::MappingContext;
 use graph::components::ethereum::*;
+use graph::data::store;
 use graph::data::subgraph::DataSource;
 use graph::ethabi::{LogParam, Param};
 use graph::prelude::{Error as FailureError, *};
@@ -59,6 +60,7 @@ const BIG_DECIMAL_DIVIDED_BY: usize = 30;
 const BIG_DECIMAL_EQUALS: usize = 31;
 const BIG_DECIMAL_TO_STRING: usize = 32;
 const BIG_DECIMAL_FROM_STRING: usize = 33;
+const IPFS_MAP_FUNC_INDEX: usize = 34;
 
 pub struct WasmiModuleConfig<T, L, S> {
     pub subgraph_id: SubgraphDeploymentId,
@@ -81,7 +83,7 @@ where
     T: EthereumAdapter,
     L: LinkResolver,
     S: Store + Send + Sync + 'static,
-    U: Sink<SinkItem = Box<Future<Item = (), Error = ()> + Send>> + Clone + 'static,
+    U: Sink<SinkItem = Box<Future<Item = (), Error = ()> + Send>> + Clone + Send + Sync + 'static,
 {
     /// Pre-process and validate the module.
     pub fn new(
@@ -142,12 +144,12 @@ where
 }
 
 /// A WASM module based on wasmi that powers a subgraph runtime.
-pub(crate) struct WasmiModule<'a, T, L, S, U> {
+pub(crate) struct WasmiModule<T, L, S, U> {
     pub logger: Logger,
     pub module: ModuleRef,
     memory: MemoryRef,
-    host_exports: &'a HostExports<T, L, S, U>,
-    ctx: MappingContext,
+    pub ctx: MappingContext,
+    pub valid_module: Arc<ValidModule<T, L, S, U>>,
 
     // Time when the current handler began processing.
     start_time: Instant,
@@ -157,16 +159,16 @@ pub(crate) struct WasmiModule<'a, T, L, S, U> {
     running_start: bool,
 }
 
-impl<'a, T, L, S, U> WasmiModule<'a, T, L, S, U>
+impl<T, L, S, U> WasmiModule<T, L, S, U>
 where
     T: EthereumAdapter,
     L: LinkResolver,
     S: Store + Send + Sync + 'static,
-    U: Sink<SinkItem = Box<Future<Item = (), Error = ()> + Send>> + Clone + 'static,
+    U: Sink<SinkItem = Box<Future<Item = (), Error = ()> + Send>> + Clone + Send + Sync + 'static,
 {
     /// Creates a new wasmi module
     pub fn from_valid_module_with_ctx(
-        valid_module: &'a ValidModule<T, L, S, U>,
+        valid_module: Arc<ValidModule<T, L, S, U>>,
         ctx: MappingContext,
     ) -> Result<Self, FailureError> {
         let logger = valid_module.logger.new(o!("component" => "WasmiModule"));
@@ -195,8 +197,8 @@ where
             logger,
             module: not_started_module,
             memory,
-            host_exports: &valid_module.host_exports,
             ctx,
+            valid_module: valid_module.clone(),
             start_time: Instant::now(),
             running_start: true,
         };
@@ -207,6 +209,10 @@ where
         this.running_start = false;
 
         Ok(this)
+    }
+
+    pub(crate) fn host_exports(&self) -> &HostExports<T, L, S, U> {
+        &self.valid_module.host_exports
     }
 
     pub(crate) fn handle_ethereum_log(
@@ -222,7 +228,7 @@ where
         // Prepare an EthereumEvent for the WASM runtime
         // Decide on the destination type using the mapping
         // api version provided in the subgraph manifest
-        let event = if self.host_exports.api_version >= Version::new(0, 0, 2) {
+        let event = if self.valid_module.host_exports.api_version >= Version::new(0, 0, 2) {
             RuntimeValue::from(
                 self.asc_new::<AscEthereumEvent<AscEthereumTransaction_0_0_2>, _>(
                     &EthereumEventData {
@@ -316,14 +322,39 @@ where
                 )
             })
     }
+
+    pub(crate) fn handle_json_callback(
+        mut self,
+        handler_name: &str,
+        value: &graph::serde_json::Value,
+        user_data: &store::Value,
+    ) -> Result<Vec<EntityOperation>, FailureError> {
+        let value = RuntimeValue::from(self.asc_new(value));
+        let user_data = RuntimeValue::from(self.asc_new(user_data));
+
+        // Invoke the callback
+        let result =
+            self.module
+                .clone()
+                .invoke_export(handler_name, &[value, user_data], &mut self);
+
+        // Return either the collected entity operations or an error
+        result.map(|_| self.ctx.entity_operations).map_err(|e| {
+            format_err!(
+                "Failed to handle callback with handler \"{}\": {}",
+                handler_name,
+                e
+            )
+        })
+    }
 }
 
-impl<'a, T, L, S, U> AscHeap for WasmiModule<'a, T, L, S, U>
+impl<T, L, S, U> AscHeap for WasmiModule<T, L, S, U>
 where
     T: EthereumAdapter,
     L: LinkResolver,
     S: Store + Send + Sync + 'static,
-    U: Sink<SinkItem = Box<Future<Item = (), Error = ()> + Send>> + Clone + 'static,
+    U: Sink<SinkItem = Box<Future<Item = (), Error = ()> + Send>> + Clone + Send + Sync + 'static,
 {
     fn raw_new(&mut self, bytes: &[u8]) -> Result<u32, Error> {
         let address = self
@@ -352,15 +383,15 @@ where
 impl<E> HostError for HostExportError<E> where E: fmt::Debug + fmt::Display + Send + Sync + 'static {}
 
 // Implementation of externals.
-impl<'a, T, L, S, U> WasmiModule<'a, T, L, S, U>
+impl<T, L, S, U> WasmiModule<T, L, S, U>
 where
     T: EthereumAdapter,
     L: LinkResolver,
     S: Store + Send + Sync + 'static,
-    U: Sink<SinkItem = Box<Future<Item = (), Error = ()> + Send>> + Clone + 'static,
+    U: Sink<SinkItem = Box<Future<Item = (), Error = ()> + Send>> + Clone + Send + Sync + 'static,
 {
     fn gas(&mut self, _gas_spent: u32) -> Result<Option<RuntimeValue>, Trap> {
-        self.host_exports.check_timeout(self.start_time)?;
+        self.host_exports().check_timeout(self.start_time)?;
         Ok(None)
     }
 
@@ -390,7 +421,7 @@ where
             _ => Some(column_number),
         };
         Err(self
-            .host_exports
+            .host_exports()
             .abort(message, file_name, line_number, column_number)
             .unwrap_err()
             .into())
@@ -409,7 +440,8 @@ where
         let entity = self.asc_get(entity_ptr);
         let id = self.asc_get(id_ptr);
         let data = self.asc_get(data_ptr);
-        self.host_exports
+        self.valid_module
+            .host_exports
             .store_set(&mut self.ctx, entity, id, data)?;
         Ok(None)
     }
@@ -425,7 +457,9 @@ where
         }
         let entity = self.asc_get(entity_ptr);
         let id = self.asc_get(id_ptr);
-        self.host_exports.store_remove(&mut self.ctx, entity, id);
+        self.valid_module
+            .host_exports
+            .store_remove(&mut self.ctx, entity, id);
         Ok(None)
     }
 
@@ -435,7 +469,7 @@ where
         entity_ptr: AscPtr<AscString>,
         id_ptr: AscPtr<AscString>,
     ) -> Result<Option<RuntimeValue>, Trap> {
-        let entity_option = self.host_exports.store_get(
+        let entity_option = self.host_exports().store_get(
             &self.ctx,
             self.asc_get(entity_ptr),
             self.asc_get(id_ptr),
@@ -453,7 +487,10 @@ where
         call_ptr: AscPtr<AscUnresolvedContractCall>,
     ) -> Result<Option<RuntimeValue>, Trap> {
         let call = self.asc_get(call_ptr);
-        let result = self.host_exports.ethereum_call(&mut self.ctx, call)?;
+        let result = self
+            .valid_module
+            .host_exports
+            .ethereum_call(&mut self.ctx, call)?;
         Ok(Some(RuntimeValue::from(self.asc_new(&*result))))
     }
 
@@ -462,7 +499,9 @@ where
         &mut self,
         bytes_ptr: AscPtr<Uint8Array>,
     ) -> Result<Option<RuntimeValue>, Trap> {
-        let string = self.host_exports.bytes_to_string(self.asc_get(bytes_ptr))?;
+        let string = self
+            .host_exports()
+            .bytes_to_string(self.asc_get(bytes_ptr))?;
         Ok(Some(RuntimeValue::from(self.asc_new(&string))))
     }
 
@@ -472,7 +511,7 @@ where
         &mut self,
         bytes_ptr: AscPtr<Uint8Array>,
     ) -> Result<Option<RuntimeValue>, Trap> {
-        let result = self.host_exports.bytes_to_hex(self.asc_get(bytes_ptr));
+        let result = self.host_exports().bytes_to_hex(self.asc_get(bytes_ptr));
         Ok(Some(RuntimeValue::from(self.asc_new(&result))))
     }
 
@@ -483,7 +522,7 @@ where
     ) -> Result<Option<RuntimeValue>, Trap> {
         let bytes: Vec<u8> = self.asc_get(big_int_ptr);
         let n = BigInt::from_signed_bytes_le(&*bytes);
-        let result = self.host_exports.big_int_to_string(n);
+        let result = self.host_exports().big_int_to_string(n);
         Ok(Some(RuntimeValue::from(self.asc_new(&result))))
     }
 
@@ -493,7 +532,7 @@ where
         big_int_ptr: AscPtr<AscBigInt>,
     ) -> Result<Option<RuntimeValue>, Trap> {
         let n: BigInt = self.asc_get(big_int_ptr);
-        let result = self.host_exports.big_int_to_hex(n);
+        let result = self.host_exports().big_int_to_hex(n);
         Ok(Some(RuntimeValue::from(self.asc_new(&result))))
     }
 
@@ -514,7 +553,7 @@ where
     /// function typeConversion.i32ToBigInt(i: i32): Uint64Array
     fn big_int_to_i32(&mut self, n_ptr: AscPtr<AscBigInt>) -> Result<Option<RuntimeValue>, Trap> {
         let n: BigInt = self.asc_get(n_ptr);
-        let i = self.host_exports.big_int_to_i32(n)?;
+        let i = self.host_exports().big_int_to_i32(n)?;
         Ok(Some(RuntimeValue::from(i)))
     }
 
@@ -523,14 +562,16 @@ where
         &mut self,
         bytes_ptr: AscPtr<Uint8Array>,
     ) -> Result<Option<RuntimeValue>, Trap> {
-        let result = self.host_exports.json_from_bytes(self.asc_get(bytes_ptr))?;
+        let result = self
+            .host_exports()
+            .json_from_bytes(self.asc_get(bytes_ptr))?;
         Ok(Some(RuntimeValue::from(self.asc_new(&result))))
     }
 
     /// function ipfs.cat(link: String): Bytes
     fn ipfs_cat(&mut self, link_ptr: AscPtr<AscString>) -> Result<Option<RuntimeValue>, Trap> {
         let link = self.asc_get(link_ptr);
-        let ipfs_res = self.host_exports.ipfs_cat(link);
+        let ipfs_res = self.host_exports().ipfs_cat(link);
         match ipfs_res {
             Ok(bytes) => {
                 let bytes_obj: AscPtr<Uint8Array> = self.asc_new(&*bytes);
@@ -547,24 +588,65 @@ where
         }
     }
 
+    /// function ipfs.map(link: String, callback: String, flags: String[]): void
+    fn ipfs_map(
+        &mut self,
+        link_ptr: AscPtr<AscString>,
+        callback: AscPtr<AscString>,
+        user_data: AscPtr<AscEnum<StoreValueKind>>,
+        flags: AscPtr<Array<AscPtr<AscString>>>,
+    ) -> Result<Option<RuntimeValue>, Trap> {
+        let link: String = self.asc_get(link_ptr);
+        let callback: String = self.asc_get(callback);
+        let user_data: store::Value = self.asc_get(user_data);
+
+        let flags = self.asc_get(flags);
+        let start_time = Instant::now();
+        let result =
+            match self
+                .host_exports()
+                .ipfs_map(&self, link.clone(), &*callback, user_data, flags)
+            {
+                Ok(ops) => {
+                    debug!(
+                        self.logger,
+                        "Successfully processed file with ipfs.map";
+                        "link" => &link,
+                        "callback" => &*callback,
+                        "entity_operations" => ops.len(),
+                        "time" => format!("{}ms", start_time.elapsed().as_millis())
+                    );
+                    self.ctx.entity_operations.extend(ops);
+                    Ok(None)
+                }
+                Err(e) => Err(e.into()),
+            };
+
+        // Advance this module's start time by the time it took to run the entire
+        // ipfs_map. This has the effect of not charging this module for the time
+        // spent running the callback on every JSON object in the IPFS file
+        self.start_time += start_time.elapsed();
+        result
+    }
+
     /// Expects a decimal string.
     /// function json.toI64(json: String): i64
     fn json_to_i64(&mut self, json_ptr: AscPtr<AscString>) -> Result<Option<RuntimeValue>, Trap> {
-        let number = self.host_exports.json_to_i64(self.asc_get(json_ptr))?;
+        let number = self.host_exports().json_to_i64(self.asc_get(json_ptr))?;
         Ok(Some(RuntimeValue::from(number)))
     }
 
     /// Expects a decimal string.
     /// function json.toU64(json: String): u64
     fn json_to_u64(&mut self, json_ptr: AscPtr<AscString>) -> Result<Option<RuntimeValue>, Trap> {
-        let number = self.host_exports.json_to_u64(self.asc_get(json_ptr))?;
+        let number = self.host_exports().json_to_u64(self.asc_get(json_ptr))?;
         Ok(Some(RuntimeValue::from(number)))
     }
 
     /// Expects a decimal string.
     /// function json.toF64(json: String): f64
     fn json_to_f64(&mut self, json_ptr: AscPtr<AscString>) -> Result<Option<RuntimeValue>, Trap> {
-        let number = self.host_exports.json_to_f64(self.asc_get(json_ptr))?;
+        let number = self.host_exports().json_to_f64(self.asc_get(json_ptr))?;
         Ok(Some(RuntimeValue::from(F64::from(number))))
     }
 
@@ -574,7 +656,9 @@ where
         &mut self,
         json_ptr: AscPtr<AscString>,
     ) -> Result<Option<RuntimeValue>, Trap> {
-        let big_int = self.host_exports.json_to_big_int(self.asc_get(json_ptr))?;
+        let big_int = self
+            .host_exports()
+            .json_to_big_int(self.asc_get(json_ptr))?;
         let big_int_ptr: AscPtr<AscBigInt> = self.asc_new(&*big_int);
         Ok(Some(RuntimeValue::from(big_int_ptr)))
     }
@@ -584,7 +668,9 @@ where
         &mut self,
         input_ptr: AscPtr<Uint8Array>,
     ) -> Result<Option<RuntimeValue>, Trap> {
-        let input = self.host_exports.crypto_keccak_256(self.asc_get(input_ptr));
+        let input = self
+            .host_exports()
+            .crypto_keccak_256(self.asc_get(input_ptr));
         let hash_ptr: AscPtr<Uint8Array> = self.asc_new(input.as_ref());
         Ok(Some(RuntimeValue::from(hash_ptr)))
     }
@@ -596,7 +682,7 @@ where
         y_ptr: AscPtr<AscBigInt>,
     ) -> Result<Option<RuntimeValue>, Trap> {
         let result = self
-            .host_exports
+            .host_exports()
             .big_int_plus(self.asc_get(x_ptr), self.asc_get(y_ptr));
         let result_ptr: AscPtr<AscBigInt> = self.asc_new(&result);
         Ok(Some(RuntimeValue::from(result_ptr)))
@@ -609,7 +695,7 @@ where
         y_ptr: AscPtr<AscBigInt>,
     ) -> Result<Option<RuntimeValue>, Trap> {
         let result = self
-            .host_exports
+            .host_exports()
             .big_int_minus(self.asc_get(x_ptr), self.asc_get(y_ptr));
         let result_ptr: AscPtr<AscBigInt> = self.asc_new(&result);
         Ok(Some(RuntimeValue::from(result_ptr)))
@@ -622,7 +708,7 @@ where
         y_ptr: AscPtr<AscBigInt>,
     ) -> Result<Option<RuntimeValue>, Trap> {
         let result = self
-            .host_exports
+            .host_exports()
             .big_int_times(self.asc_get(x_ptr), self.asc_get(y_ptr));
         let result_ptr: AscPtr<AscBigInt> = self.asc_new(&result);
         Ok(Some(RuntimeValue::from(result_ptr)))
@@ -635,7 +721,7 @@ where
         y_ptr: AscPtr<AscBigInt>,
     ) -> Result<Option<RuntimeValue>, Trap> {
         let result = self
-            .host_exports
+            .host_exports()
             .big_int_divided_by(self.asc_get(x_ptr), self.asc_get(y_ptr));
         let result_ptr: AscPtr<AscBigInt> = self.asc_new(&result);
         Ok(Some(RuntimeValue::from(result_ptr)))
@@ -649,7 +735,7 @@ where
     ) -> Result<Option<RuntimeValue>, Trap> {
         let x = self.asc_get::<BigInt, _>(x_ptr).to_big_decimal(0.into());
         let result = self
-            .host_exports
+            .host_exports()
             .big_decimal_divided_by(x, self.asc_get(y_ptr))?;
         Ok(Some(RuntimeValue::from(self.asc_new(&result))))
     }
@@ -661,7 +747,7 @@ where
         y_ptr: AscPtr<AscBigInt>,
     ) -> Result<Option<RuntimeValue>, Trap> {
         let result = self
-            .host_exports
+            .host_exports()
             .big_int_mod(self.asc_get(x_ptr), self.asc_get(y_ptr));
         let result_ptr: AscPtr<AscBigInt> = self.asc_new(&result);
         Ok(Some(RuntimeValue::from(result_ptr)))
@@ -671,7 +757,7 @@ where
         &mut self,
         bytes_ptr: AscPtr<Uint8Array>,
     ) -> Result<Option<RuntimeValue>, Trap> {
-        let result = self.host_exports.bytes_to_base58(self.asc_get(bytes_ptr));
+        let result = self.host_exports().bytes_to_base58(self.asc_get(bytes_ptr));
         let result_ptr: AscPtr<AscString> = self.asc_new(&result);
         Ok(Some(RuntimeValue::from(result_ptr)))
     }
@@ -682,7 +768,7 @@ where
         big_decimal_ptr: AscPtr<AscBigDecimal>,
     ) -> Result<Option<RuntimeValue>, Trap> {
         let result = self
-            .host_exports
+            .host_exports()
             .big_decimal_to_string(self.asc_get(big_decimal_ptr));
         Ok(Some(RuntimeValue::from(self.asc_new(&result))))
     }
@@ -693,7 +779,7 @@ where
         string_ptr: AscPtr<AscString>,
     ) -> Result<Option<RuntimeValue>, Trap> {
         let result = self
-            .host_exports
+            .host_exports()
             .big_decimal_from_string(self.asc_get(string_ptr))?;
         Ok(Some(RuntimeValue::from(self.asc_new(&result))))
     }
@@ -705,7 +791,7 @@ where
         y_ptr: AscPtr<AscBigDecimal>,
     ) -> Result<Option<RuntimeValue>, Trap> {
         let result = self
-            .host_exports
+            .host_exports()
             .big_decimal_plus(self.asc_get(x_ptr), self.asc_get(y_ptr));
         Ok(Some(RuntimeValue::from(self.asc_new(&result))))
     }
@@ -717,7 +803,7 @@ where
         y_ptr: AscPtr<AscBigDecimal>,
     ) -> Result<Option<RuntimeValue>, Trap> {
         let result = self
-            .host_exports
+            .host_exports()
             .big_decimal_minus(self.asc_get(x_ptr), self.asc_get(y_ptr));
         Ok(Some(RuntimeValue::from(self.asc_new(&result))))
     }
@@ -729,7 +815,7 @@ where
         y_ptr: AscPtr<AscBigDecimal>,
     ) -> Result<Option<RuntimeValue>, Trap> {
         let result = self
-            .host_exports
+            .host_exports()
             .big_decimal_times(self.asc_get(x_ptr), self.asc_get(y_ptr));
         Ok(Some(RuntimeValue::from(self.asc_new(&result))))
     }
@@ -741,7 +827,7 @@ where
         y_ptr: AscPtr<AscBigDecimal>,
     ) -> Result<Option<RuntimeValue>, Trap> {
         let result = self
-            .host_exports
+            .host_exports()
             .big_decimal_divided_by(self.asc_get(x_ptr), self.asc_get(y_ptr))?;
         Ok(Some(RuntimeValue::from(self.asc_new(&result))))
     }
@@ -753,18 +839,18 @@ where
         y_ptr: AscPtr<AscBigDecimal>,
     ) -> Result<Option<RuntimeValue>, Trap> {
         let equals = self
-            .host_exports
+            .host_exports()
             .big_decimal_equals(self.asc_get(x_ptr), self.asc_get(y_ptr));
         Ok(Some(RuntimeValue::I32(if equals { 1 } else { 0 })))
     }
 }
 
-impl<'a, T, L, S, U> Externals for WasmiModule<'a, T, L, S, U>
+impl<T, L, S, U> Externals for WasmiModule<T, L, S, U>
 where
     T: EthereumAdapter,
     L: LinkResolver,
     S: Store + Send + Sync + 'static,
-    U: Sink<SinkItem = Box<Future<Item = (), Error = ()> + Send>> + Clone + 'static,
+    U: Sink<SinkItem = Box<Future<Item = (), Error = ()> + Send>> + Clone + Send + Sync + 'static,
 {
     fn invoke_index(
         &mut self,
@@ -829,6 +915,12 @@ where
             }
             BIG_DECIMAL_TO_STRING => self.big_decimal_to_string(args.nth_checked(0)?),
             BIG_DECIMAL_FROM_STRING => self.big_decimal_from_string(args.nth_checked(0)?),
+            IPFS_MAP_FUNC_INDEX => self.ipfs_map(
+                args.nth_checked(0)?,
+                args.nth_checked(1)?,
+                args.nth_checked(2)?,
+                args.nth_checked(3)?,
+            ),
             _ => panic!("Unimplemented function at {}", index),
         }
     }
@@ -901,6 +993,7 @@ impl ModuleImportResolver for ModuleResolver {
 
             // ipfs
             "ipfs.cat" => FuncInstance::alloc_host(signature, IPFS_CAT_FUNC_INDEX),
+            "ipfs.map" => FuncInstance::alloc_host(signature, IPFS_MAP_FUNC_INDEX),
 
             // crypto
             "crypto.keccak256" => FuncInstance::alloc_host(signature, CRYPTO_KECCAK_256_INDEX),

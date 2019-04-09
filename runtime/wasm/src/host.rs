@@ -215,6 +215,8 @@ impl RuntimeHost {
             };
             let valid_module = ValidModule::new(&module_logger, wasmi_config, task_sender)
                 .expect("Failed to validate module");
+            let valid_module = Arc::new(valid_module);
+
             // Pass incoming triggers to the WASM module and return entity changes;
             // Stop when cancelled.
             let canceler = cancel_receiver.into_stream();
@@ -234,7 +236,7 @@ impl RuntimeHost {
                         block,
                         entity_operations,
                     };
-                    let module = WasmiModule::from_valid_module_with_ctx(&valid_module, ctx)?;
+                    let module = WasmiModule::from_valid_module_with_ctx(valid_module.clone(), ctx)?;
                     let result = match trigger {
                         MappingTrigger::Log {
                             transaction, log, params, handler,
