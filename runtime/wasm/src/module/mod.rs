@@ -291,13 +291,15 @@ where
                 .invoke_export(handler_name, &[value, user_data], &mut self);
 
         // Return either the collected entity operations or an error
-        result.map(|_| self.ctx.entity_operations).map_err(|e| {
-            format_err!(
-                "Failed to handle callback with handler \"{}\": {}",
-                handler_name,
-                e
-            )
-        })
+        result
+            .map(|_| self.ctx.state.entity_operations)
+            .map_err(|e| {
+                format_err!(
+                    "Failed to handle callback with handler \"{}\": {}",
+                    handler_name,
+                    e
+                )
+            })
     }
 }
 
@@ -568,7 +570,7 @@ where
                         "entity_operations" => ops.len(),
                         "time" => format!("{}ms", start_time.elapsed().as_millis())
                     );
-                    self.ctx.entity_operations.extend(ops);
+                    self.ctx.state.entity_operations.extend(ops);
                     Ok(None)
                 }
                 Err(e) => Err(e.into()),
@@ -805,9 +807,10 @@ where
     ) -> Result<Option<RuntimeValue>, Trap> {
         let name: String = self.asc_get(name_ptr);
         let params: Vec<String> = self.asc_get(params_ptr);
-        let result = self
-            .host_exports
-            .data_source_create(&mut self.ctx, name, params)?;
+        let result =
+            self.valid_module
+                .host_exports
+                .data_source_create(&mut self.ctx, name, params)?;
         Ok(Some(RuntimeValue::from(result as u32)))
     }
 }
