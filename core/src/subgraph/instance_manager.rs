@@ -1,11 +1,13 @@
 use futures::future::{loop_fn, Loop};
 use futures::sync::mpsc::{channel, Receiver, Sender};
-use graph::data::subgraph::schema::SubgraphDeploymentEntity;
+use graph::data::subgraph::schema::{EthereumContractDataSourceEntity, SubgraphDeploymentEntity};
 use graph::prelude::{SubgraphInstance as SubgraphInstanceTrait, *};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
 use tokio::timer;
+use uuid::Uuid;
 
 use super::SubgraphInstance;
 use crate::elastic_logger;
@@ -28,7 +30,7 @@ where
     pub restarts: u64,
 }
 
-type InstanceShutdownMap = Arc<RwLock<HashMap<SubgraphDeploymentId, CancelGuard>>>;
+type SharedInstanceKeepAliveMap = Arc<RwLock<HashMap<SubgraphDeploymentId, CancelGuard>>>;
 
 pub struct SubgraphInstanceManager {
     logger: Logger,
@@ -84,7 +86,7 @@ impl SubgraphInstanceManager {
         B: BlockStreamBuilder + 'static,
     {
         // Subgraph instance shutdown senders
-        let instances: InstanceShutdownMap = Default::default();
+        let instances: SharedInstanceKeepAliveMap = Default::default();
 
         tokio::spawn(receiver.for_each(move |event| {
             use self::SubgraphAssignmentProviderEvent::*;
@@ -137,9 +139,9 @@ impl SubgraphInstanceManager {
 
     fn start_subgraph<B, T, S>(
         logger: Logger,
-        instances: InstanceShutdownMap,
+        instances: SharedInstanceKeepAliveMap,
         host_builder: T,
-        block_stream_builder: B,
+        stream_builder: B,
         store: Arc<S>,
         manifest: SubgraphManifest,
     ) -> Result<(), Error>
@@ -172,9 +174,6 @@ impl SubgraphInstanceManager {
             }
         }
 
-        // Create a block stream builder for this subgraph
-        let stream_builder = block_stream_builder.with_subgraph(&manifest);
-
         // Load the subgraph
         let deployment_id = manifest.id.clone();
         let instance = Arc::new(RwLock::new(SubgraphInstance::from_manifest(
@@ -183,6 +182,7 @@ impl SubgraphInstanceManager {
             host_builder,
         )?));
 
+        // Define the initial subgraph state
         let subgraph_state = SubgraphState {
             deployment_id,
             instance,
@@ -193,305 +193,37 @@ impl SubgraphInstanceManager {
             logger,
         };
 
-        tokio::spawn(loop_fn(subgraph_state, move |mut subgraph_state| {
-            let logger = subgraph_state
-                .logger
-                .new(o!("restarts" => subgraph_state.restarts));
-
-            debug!(logger, "Starting or restarting subgraph");
-
-            // Clone a few things for different parts of the async processing
-            let id_for_err = subgraph_state.deployment_id.clone();
-            let store_for_err = subgraph_state.store.clone();
-            let logger_for_err = logger.clone();
-            let logger_for_data_sources_check = logger.clone();
-            let logger_for_stream = logger.clone();
-
-            // Obtain the subgraph instance from the state
-            let subgraph_instance = subgraph_state.instance.clone();
-
-            // Update the subgraph_state of the stream with new data sources
-            subgraph_state.stream_builder =
-                subgraph_state.stream_builder.with_logger(logger.clone());
-
-            let block_stream_canceler = CancelGuard::new();
-            let block_stream_cancel_handle = block_stream_canceler.handle();
-            let block_stream = subgraph_state
-                .stream_builder
-                .build(subgraph_instance.read().unwrap().ethereum_log_filter())
-                .from_err()
-                .cancelable(&block_stream_canceler, || CancelableError::Cancel);
-
-            // Keep the cancel guard for shutting down the subgraph instance later
-            instances
-                .write()
-                .unwrap()
-                .insert(subgraph_state.deployment_id.clone(), block_stream_canceler);
-
+        // Keep restarting the subgraph until it terminates. The subgraph
+        // will usually only run once, but if there are dynamic data sources
+        // involved, it will be restarted after every block to include
+        // blocks for the new data sources. We decided that this would be
+        // easier than updating the subgraph's block stream while it is
+        // already running.
+        tokio::spawn(loop_fn(subgraph_state, move |subgraph_state| {
             let instances = instances.clone();
 
-            let new_data_sources: Arc<RwLock<Option<Vec<DataSource>>>> =
-                Arc::new(RwLock::new(None));
-            let new_data_sources_write = new_data_sources.clone();
-            let new_data_sources_read = new_data_sources.clone();
-
-            timer::Delay::new(Instant::now() + Duration::from_secs(2))
+            // FIXME: This long delay here is a hack to not run into "too many clients"
+            // issues due to several instances of the subgraph still running and
+            // referencing their chain head listener; we need to find a more robust
+            // solution
+            timer::Delay::new(Instant::now() + Duration::from_secs(10))
                 .map_err(|_| ())
-                .and_then(|_| {
-                    debug!(logger_for_stream, "Starting block stream");
-
-                    block_stream
-                        .take_while(move |_| {
-                            let data_sources = new_data_sources_read.read().unwrap();
-                            if let Some(ref data_sources) = *data_sources {
-                                if data_sources.is_empty() {
-                                    Ok(true)
-                                } else {
-                                    debug!(
-                                        logger_for_data_sources_check,
-                                        "Have {} new data sources, need to restart",
-                                        data_sources.len()
-                                    );
-                                    Ok(false)
-                                }
-                            } else {
-                                Ok(true)
-                            }
-                        })
-                        .fold(subgraph_state, move |subgraph_state, block| {
-                            let id = subgraph_state.deployment_id.clone();
-                            let instance = subgraph_state.instance.clone();
-                            let store = subgraph_state.store.clone();
-                            let block_stream_cancel_handle = block_stream_cancel_handle.clone();
-                            let new_data_sources_write = new_data_sources_write.clone();
-                            let logger = logger_for_stream.new(o!(
-                                "block_number" => format!("{:?}", block.block.number.unwrap()),
-                                "block_hash" => format!("{:?}", block.block.hash.unwrap())
-                            ));
-
-                            // Extract logs relevant to the subgraph
-                            let logs: Vec<_> = block
-                                .transaction_receipts
-                                .iter()
-                                .flat_map(|receipt| {
-                                    receipt
-                                        .logs
-                                        .iter()
-                                        .filter(|log| instance.read().unwrap().matches_log(&log))
-                                })
-                                .cloned()
-                                .collect();
-
-                            if logs.len() == 0 {
-                                debug!(logger, "No events found in this block for this subgraph");
-                            } else if logs.len() == 1 {
-                                info!(logger, "1 event found in this block for this subgraph");
-                            } else {
-                                info!(
-                                    logger,
-                                    "{} events found in this block for this subgraph",
-                                    logs.len()
-                                );
-                            }
-
-                            // Process events one after the other, passing in entity operations
-                            // collected previously to every new event being processed
-                            let block_for_process = Arc::new(block);
-                            let block_for_transact = block_for_process.clone();
-                            let logger_for_process = logger;
-                            let logger_for_transact = logger_for_process.clone();
-                            let block_state = ProcessingState::default();
-                            stream::iter_ok::<_, CancelableError<Error>>(logs)
-                                // Process events from the block stream
-                                .fold(block_state, move |block_state, log| {
-                                    let logger = logger_for_process.clone();
-                                    let instance = instance.clone();
-                                    let block = block_for_process.clone();
-
-                                    let transaction =
-                                        block.transaction_for_log(&log).map(Arc::new).ok_or_else(
-                                            || format_err!("Found no transaction for event"),
-                                        );
-
-                                    future::result(transaction).and_then(move |transaction| {
-                                        instance
-                                            .read()
-                                            .unwrap()
-                                            .process_log(
-                                                &logger,
-                                                block,
-                                                transaction,
-                                                log,
-                                                block_state,
-                                            )
-                                            .map(|block_state| block_state)
-                                            .map_err(|e| {
-                                                format_err!("Failed to process event: {}", e)
-                                            })
-                                    })
-                                })
-                                // Create dynamic data sources and process their events as well
-                                .and_then(move |block_state| {
-                                    // Create data source instances from templates
-                                    let data_sources = block_state
-                                        .created_data_sources
-                                        .iter()
-                                        .try_fold(vec![], |mut data_sources, info| {
-                                            let template = &subgraph_state
-                                                .templates
-                                                .iter()
-                                                .find(|(data_source_name, template)| {
-                                                    data_source_name == &info.data_source
-                                                        && template.name == info.template
-                                                })
-                                                .ok_or_else(|| {
-                                                    format_err!(
-                                                    "Failed to create data source with name `{}`. \
-                                                     No template with this name in parent data \
-                                                     source `{}`.",
-                                                    info.template,
-                                                    info.data_source
-                                                )
-                                                })?
-                                                .1;
-
-                                            let data_source = DataSource::try_from_template(
-                                                &template,
-                                                &info.params,
-                                            )?;
-                                            data_sources.push(data_source);
-                                            Ok(data_sources)
-                                        });
-
-                                    // Fail early if any of the data sources couln't be created (e.g.
-                                    // due to parameters missing)
-                                    let data_sources = match data_sources {
-                                        Ok(data_sources) => {
-                                            if data_sources.is_empty() {
-                                                None
-                                            } else {
-                                                Some(data_sources)
-                                            }
-                                        }
-                                        Err(e) => return future::err(e),
-                                    };
-
-                                    // TODO: Ask the block stream for events for the new data sources
-                                    // that come from the same block; then process these events
-
-                                    // Update the block stream so it includes events from these
-                                    // data sources going forward
-
-                                    // Track the new data sources
-                                    let mut new_data_sources =
-                                        new_data_sources_write.write().unwrap();
-                                    *new_data_sources = data_sources;
-
-                                    // TODO:
-                                    // 1. Request and process events for the current block
-                                    // 2. Create entity operations for the new data source
-
-                                    future::ok((subgraph_state, block_state))
-                                })
-                                // Apply entity operations and advance the stream
-                                .and_then(move |(subgraph_state, block_state)| {
-                                    let block = block_for_transact.clone();
-                                    let logger = logger_for_transact.clone();
-
-                                    let block_ptr_now = EthereumBlockPointer::to_parent(&block);
-                                    let block_ptr_after = EthereumBlockPointer::from(&*block);
-
-                                    // Avoid writing to store if block stream has been canceled
-                                    if block_stream_cancel_handle.is_canceled() {
-                                        return Err(CancelableError::Cancel);
-                                    }
-
-                                    info!(
-                                        logger,
-                                        "Applying {} entity operation(s)",
-                                        block_state.entity_operations.len()
-                                    );
-
-                                    // Transact entity operations into the store and update the
-                                    // subgraph's block stream pointer
-                                    store
-                                        .transact_block_operations(
-                                            id.clone(),
-                                            block_ptr_now,
-                                            block_ptr_after,
-                                            block_state.entity_operations,
-                                        )
-                                        .map(|_| subgraph_state)
-                                        .map_err(|e| {
-                                            format_err!(
-                                        "Error while processing block stream for a subgraph: {}",
-                                        e
-                                    )
-                                            .into()
-                                        })
-                                })
-                        })
-                        .and_then(move |mut subgraph_state| {
-                            // Try to add the new data sources to the subgraph
-                            let mut new_data_sources = new_data_sources.write().unwrap();
-                            if let Some(data_sources) = new_data_sources.take() {
-                                subgraph_state
-                                    .instance
-                                    .write()
-                                    .unwrap()
-                                    .add_dynamic_data_sources(data_sources)?
-                            }
-
-                            subgraph_state.restarts += 1;
-
-                            // Cancel the stream for real
-                            instances
-                                .write()
-                                .unwrap()
-                                .remove(&subgraph_state.deployment_id);
-
-                            // And restart the subgraph
-                            Ok(Loop::Continue(subgraph_state))
-                        })
-                        .map_err(move |e| match e {
-                            CancelableError::Cancel => {
-                                debug!(
-                                    logger_for_err,
-                                    "Subgraph block stream shut down cleanly";
-                                    "id" => id_for_err.to_string()
-                                );
-                            }
-                            CancelableError::Error(e) => {
-                                error!(
-                                    logger_for_err,
-                                    "Subgraph instance failed to run: {}", e;
-                                    "id" => id_for_err.to_string()
-                                );
-
-                                // Set subgraph status to Failed
-                                let status_ops = SubgraphDeploymentEntity::update_failed_operations(
-                                    &id_for_err,
-                                    true,
-                                );
-                                if let Err(e) = store_for_err
-                                    .apply_entity_operations(status_ops, EventSource::None)
-                                {
-                                    error!(
-                                        logger_for_err,
-                                        "Failed to set subgraph status to Failed: {}", e;
-                                        "id" => id_for_err.to_string()
-                                    );
-                                }
-                            }
-                        })
+                .and_then(move |_| {
+                    run_subgraph(
+                        subgraph_state
+                            .logger
+                            .new(o!("restarts" => subgraph_state.restarts)),
+                        subgraph_state,
+                        instances.clone(),
+                    )
                 })
         }));
 
         Ok(())
     }
 
-    fn stop_subgraph(instances: InstanceShutdownMap, id: SubgraphDeploymentId) {
-        // Drop the cancel guard to shut down the subgraph now
+    fn stop_subgraph(instances: SharedInstanceKeepAliveMap, id: SubgraphDeploymentId) {
+        // Drop the cancel guard to shut down the sujbgraph now
         let mut instances = instances.write().unwrap();
         instances.remove(&id);
     }
@@ -507,4 +239,288 @@ impl EventConsumer<SubgraphAssignmentProviderEvent> for SubgraphInstanceManager 
             error!(logger, "Component was dropped: {}", e);
         }))
     }
+}
+
+fn run_subgraph<B, S, T>(
+    logger: Logger,
+    subgraph_state: SubgraphState<B, S, T>,
+    instances: SharedInstanceKeepAliveMap,
+) -> impl Future<Item = Loop<(), SubgraphState<B, S, T>>, Error = ()>
+where
+    B: BlockStreamBuilder,
+    S: Store + ChainStore,
+    T: RuntimeHostBuilder,
+{
+    debug!(logger, "Starting or restarting subgraph");
+
+    // Clone a few things for different parts of the async processing
+    let id_for_err = subgraph_state.deployment_id.clone();
+    let store_for_err = subgraph_state.store.clone();
+    let logger_for_err = logger.clone();
+    let logger_for_data_sources_check = logger.clone();
+    let logger_for_stream = logger.clone();
+
+    // Obtain the subgraph instance from the state
+    let subgraph_instance = subgraph_state.instance.clone();
+
+    let block_stream_canceler = CancelGuard::new();
+    let block_stream_cancel_handle = block_stream_canceler.handle();
+    let block_stream = subgraph_state
+        .stream_builder
+        .build(
+            logger.clone(),
+            subgraph_state.deployment_id.clone(),
+            subgraph_instance.read().unwrap().ethereum_log_filter(),
+        )
+        .from_err()
+        .cancelable(&block_stream_canceler, || CancelableError::Cancel);
+
+    // Keep the cancel guard for shutting down the subgraph instance later
+    instances
+        .write()
+        .unwrap()
+        .insert(subgraph_state.deployment_id.clone(), block_stream_canceler);
+
+    let instances = instances.clone();
+
+    // Flag that indicates when to restart the subgraph's block stream
+    let restart = Arc::new(AtomicBool::new(false));
+    let restart_for_check = restart.clone();
+    let restart_for_needs_restart = restart.clone();
+
+    debug!(logger_for_stream, "Starting block stream");
+
+    block_stream
+        // Take blocks from the stream as long as no dynamic data sources
+        // have been created. Once that has happened, we need to restart
+        // the stream to include blocks for these data sources as well.
+        .take_while(move |_| {
+            if restart_for_check.load(Ordering::SeqCst) {
+                debug!(
+                    logger_for_data_sources_check,
+                    "Have new data sources, need to restart",
+                );
+                Ok(false)
+            } else {
+                Ok(true)
+            }
+        })
+        .fold(subgraph_state, move |subgraph_state, block| {
+            let restart = restart.clone();
+            let id = subgraph_state.deployment_id.clone();
+            let instance = subgraph_state.instance.clone();
+            let store = subgraph_state.store.clone();
+            let block_stream_cancel_handle = block_stream_cancel_handle.clone();
+            let logger = logger_for_stream.new(o!(
+                "block_number" => format!("{:?}", block.block.number.unwrap()),
+                "block_hash" => format!("{:?}", block.block.hash.unwrap())
+            ));
+
+            // Extract logs relevant to the subgraph
+            let logs: Vec<_> = block
+                .transaction_receipts
+                .iter()
+                .flat_map(|receipt| {
+                    receipt
+                        .logs
+                        .iter()
+                        .filter(|log| instance.read().unwrap().matches_log(&log))
+                })
+                .cloned()
+                .collect();
+
+            if logs.len() == 0 {
+                debug!(logger, "No events found in this block for this subgraph");
+            } else if logs.len() == 1 {
+                info!(logger, "1 event found in this block for this subgraph");
+            } else {
+                info!(
+                    logger,
+                    "{} events found in this block for this subgraph",
+                    logs.len()
+                );
+            }
+
+            // Process events one after the other, passing in entity operations
+            // collected previously to every new event being processed
+            let block_for_process = Arc::new(block);
+            let block_for_transact = block_for_process.clone();
+            let logger_for_process = logger;
+            let logger_for_transact = logger_for_process.clone();
+            let block_state = ProcessingState::default();
+            stream::iter_ok::<_, CancelableError<Error>>(logs)
+                // Process events from the block stream
+                .fold(block_state, move |block_state, log| {
+                    let logger = logger_for_process.clone();
+                    let instance = instance.clone();
+                    let block = block_for_process.clone();
+
+                    let transaction = block
+                        .transaction_for_log(&log)
+                        .map(Arc::new)
+                        .ok_or_else(|| format_err!("Found no transaction for event"));
+
+                    future::result(transaction).and_then(move |transaction| {
+                        instance
+                            .read()
+                            .unwrap()
+                            .process_log(&logger, block, transaction, log, block_state)
+                            .map(|block_state| block_state)
+                            .map_err(|e| format_err!("Failed to process event: {}", e))
+                    })
+                })
+                // Create dynamic data sources and process their events as well
+                .and_then(move |mut block_state| {
+                    // Create data source instances from templates
+                    let data_sources = block_state.created_data_sources.iter().try_fold(
+                        vec![],
+                        |mut data_sources, info| {
+                            let template = &subgraph_state
+                                .templates
+                                .iter()
+                                .find(|(data_source_name, template)| {
+                                    data_source_name == &info.data_source
+                                        && template.name == info.template
+                                })
+                                .ok_or_else(|| {
+                                    format_err!(
+                                        "Failed to create data source with name `{}`. \
+                                         No template with this name in parent data \
+                                         source `{}`.",
+                                        info.template,
+                                        info.data_source
+                                    )
+                                })?
+                                .1;
+
+                            let data_source =
+                                DataSource::try_from_template(&template, &info.params)?;
+                            data_sources.push(data_source);
+                            Ok(data_sources)
+                        },
+                    );
+
+                    // Fail early if any of the data sources couldn't be created (e.g.
+                    // due to parameters missing)
+                    let data_sources = match data_sources {
+                        Ok(data_sources) => {
+                            if data_sources.is_empty() {
+                                None
+                            } else {
+                                Some(data_sources)
+                            }
+                        }
+                        Err(e) => return future::err(e),
+                    };
+
+                    if let Some(data_sources) = data_sources {
+                        // Add entity operations to the block state in order to persist
+                        // the dynamic data sources
+                        for data_source in data_sources.iter() {
+                            let entity = EthereumContractDataSourceEntity::from(data_source);
+                            let id = format!("{}-dynamic", Uuid::new_v4().to_simple());
+                            let operations = entity.write_operations(id.as_ref());
+                            block_state.entity_operations.extend(operations);
+                        }
+
+                        // Try to add the new data sources to the subgraph;
+                        // fail if they can't be added
+                        match subgraph_state
+                            .instance
+                            .write()
+                            .unwrap()
+                            .add_dynamic_data_sources(data_sources)
+                        {
+                            Ok(_) => {}
+                            Err(e) => return future::err(e.into()),
+                        }
+
+                        // If the data sources were added correctly, mark the subgraph
+                        // for restarting after this block
+                        restart.swap(true, Ordering::SeqCst);
+                    }
+
+                    // TODO:
+                    // 1. Request and process events for the current block
+
+                    future::ok((subgraph_state, block_state))
+                })
+                // Apply entity operations and advance the stream
+                .and_then(move |(subgraph_state, block_state)| {
+                    let block = block_for_transact.clone();
+                    let logger = logger_for_transact.clone();
+
+                    let block_ptr_now = EthereumBlockPointer::to_parent(&block);
+                    let block_ptr_after = EthereumBlockPointer::from(&*block);
+
+                    // Avoid writing to store if block stream has been canceled
+                    if block_stream_cancel_handle.is_canceled() {
+                        return Err(CancelableError::Cancel);
+                    }
+
+                    info!(
+                        logger,
+                        "Applying {} entity operation(s)",
+                        block_state.entity_operations.len()
+                    );
+
+                    // Transact entity operations into the store and update the
+                    // subgraph's block stream pointer
+                    store
+                        .transact_block_operations(
+                            id.clone(),
+                            block_ptr_now,
+                            block_ptr_after,
+                            block_state.entity_operations,
+                        )
+                        .map(|_| subgraph_state)
+                        .map_err(|e| {
+                            format_err!("Error while processing block stream for a subgraph: {}", e)
+                                .into()
+                        })
+                })
+        })
+        .and_then(move |mut subgraph_state| {
+            // Reset restart flag
+            restart_for_needs_restart.swap(true, Ordering::SeqCst);
+
+            subgraph_state.restarts += 1;
+
+            // Cancel the stream for real
+            instances
+                .write()
+                .unwrap()
+                .remove(&subgraph_state.deployment_id);
+
+            // And restart the subgraph
+            Ok(Loop::Continue(subgraph_state))
+        })
+        .map_err(move |e| match e {
+            CancelableError::Cancel => {
+                debug!(
+                    logger_for_err,
+                    "Subgraph block stream shut down cleanly";
+                    "id" => id_for_err.to_string()
+                );
+            }
+            CancelableError::Error(e) => {
+                error!(
+                    logger_for_err,
+                    "Subgraph instance failed to run: {}", e;
+                    "id" => id_for_err.to_string()
+                );
+
+                // Set subgraph status to Failed
+                let status_ops =
+                    SubgraphDeploymentEntity::update_failed_operations(&id_for_err, true);
+                if let Err(e) = store_for_err.apply_entity_operations(status_ops, EventSource::None)
+                {
+                    error!(
+                        logger_for_err,
+                        "Failed to set subgraph status to Failed: {}", e;
+                        "id" => id_for_err.to_string()
+                    );
+                }
+            }
+        })
 }
