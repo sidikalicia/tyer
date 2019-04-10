@@ -47,15 +47,12 @@ impl MockBlockStreamBuilder {
 impl BlockStreamBuilder for MockBlockStreamBuilder {
     type Stream = MockBlockStream;
 
-    fn with_subgraph(self, _manifest: &SubgraphManifest) -> Self {
-        self
-    }
-
-    fn with_logger(self, _logger: Logger) -> Self {
-        self
-    }
-
-    fn build(&self, log_filter: EthereumLogFilter) -> Self::Stream {
+    fn build(
+        &self,
+        _logger: Logger,
+        _deployment_id: SubgraphDeploymentId,
+        _log_filter: EthereumLogFilter,
+    ) -> Self::Stream {
         MockBlockStream::new()
     }
 }
