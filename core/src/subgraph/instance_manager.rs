@@ -417,7 +417,11 @@ where
                     };
 
                     if let Some(data_sources) = data_sources {
-                        debug!(logger_for_data_sources, "Creating {} dynamic data source(s)", data_sources.len());
+                        debug!(
+                            logger_for_data_sources,
+                            "Creating {} dynamic data source(s)",
+                            data_sources.len()
+                        );
 
                         // Add entity operations to the block state in order to persist
                         // the dynamic data sources
