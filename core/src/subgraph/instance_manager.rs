@@ -7,7 +7,7 @@ use graph::prelude::{SubgraphInstance as SubgraphInstanceTrait, *};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::RwLock;
-use std::time::{Duration};
+use std::time::Duration;
 use uuid::Uuid;
 
 use super::SubgraphInstance;
@@ -349,6 +349,7 @@ where
             let block_for_transact = block_for_process.clone();
             let logger_for_process = logger;
             let logger_for_transact = logger_for_process.clone();
+            let logger_for_data_sources = logger_for_process.clone();
             let block_state = ProcessingState::default();
             stream::iter_ok::<_, CancelableError<Error>>(logs)
                 // Process events from the block stream
@@ -416,6 +417,8 @@ where
                     };
 
                     if let Some(data_sources) = data_sources {
+                        debug!(logger_for_data_sources, "Creating {} dynamic data source(s)", data_sources.len());
+
                         // Add entity operations to the block state in order to persist
                         // the dynamic data sources
                         for data_source in data_sources.iter() {
