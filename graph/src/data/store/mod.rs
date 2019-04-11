@@ -6,7 +6,6 @@ use std::fmt;
 use std::iter::FromIterator;
 use std::ops::{Deref, DerefMut};
 use std::str::FromStr;
-use std::convert::TryFrom;
 
 use crate::data::subgraph::SubgraphDeploymentId;
 use crate::prelude::QueryExecutionError;
@@ -290,31 +289,6 @@ impl From<Value> for query::Value {
     }
 }
 
-impl TryFrom<&query::Value> for Value {
-    type Error = Error;
-
-    fn try_from(value: &query::Value) -> Result<Self, Self::Error> {
-        Ok(match value {
-            query::Value::String(s) => Value::from(s),
-            query::Value::Int(n) => Value::from(n.as_i64().ok_or_else(|| format_err!("Invalid integer value: {:?}", n))? as u64),
-            query::Value::Boolean(b) => Value::from(*b),
-            query::Value::Null => Value::Null,
-            query::Value::Enum(e) => Value::from(e),
-            query::Value::List(values) => {
-                Value::List(
-                    values.into_iter().try_fold(vec![], |mut values, value| -> Result<Vec<Value>, Error> {
-                        values.push(Value::try_from(value)?);
-                        Ok(values)
-                    })?
-                )
-            },
-            query::Value::Object(o) => Err(format_err!("Creating a `Value` from an object is not supported: {:?}", o))?,
-            query::Value::Float(f) => Err(format_err!("Creating a `Value` from a float is not supported: {}", f))?,
-            query::Value::Variable(v) => Err(format_err!("Creating a `Value` from a variable is not supported: {}", v))?,
-        })
-    }
-}
-
 impl<'a> From<&'a str> for Value {
     fn from(value: &'a str) -> Value {
         Value::String(value.to_owned())
@@ -490,28 +464,6 @@ impl From<HashMap<Attribute, Value>> for Entity {
     }
 }
 
-impl TryFrom<&query::Value> for Entity {
-    type Error = Error;
-
-    fn try_from(value: &query::Value) -> Result<Entity, Self::Error> {
-        let map = match value {
-            query::Value::Object(map) => {
-                Ok(map)
-            },
-            _ => Err(format_err!("Cannot create entity from non-object value")),
-        }?;
-
-        let entries = map.into_iter().try_fold(vec![], |mut entries, (k, v)| -> Result<Vec<(&str, Value)>, Error> {
-            entries.push(
-                (k.as_str(), Value::try_from(v)?)
-            );
-            Ok(entries)
-        })?;
-
-        Ok(Entity::from(entries))
-    }
-}
-
 impl<'a> From<Vec<(&'a str, Value)>> for Entity {
     fn from(entries: Vec<(&'a str, Value)>) -> Entity {
         Entity::from(HashMap::from_iter(
@@ -546,7 +498,7 @@ fn value_bigint() {
     assert_eq!(query::Value::from(from_query), graphql_value);
 }
 
-/// Temporary trait until TryFrom has landed in stable.
+/// Convenience trait for (maybe) converting entities into other types.
 pub trait TryFromEntity: Sized {
     fn try_from_entity(entity: Entity) -> Result<Self, Error>;
 }
