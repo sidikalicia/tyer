@@ -87,8 +87,9 @@ where
                         .map_err(SubgraphAssignmentProviderError::DynamicDataSourcesError),
                 )
                 .and_then(
-                    move |(subgraph, data_sources)| -> Box<Future<Item = _, Error = _> + Send> {
-                        dbg!(data_sources.len());
+                    move |(mut subgraph, data_sources)| -> Box<Future<Item = _, Error = _> + Send> {
+                        // Add dynamic data sources to the subgraph
+                        subgraph.data_sources.extend(data_sources);
 
                         // If subgraph ID already in set
                         if !self_clone
