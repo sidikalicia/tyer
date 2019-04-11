@@ -115,7 +115,11 @@ impl SubgraphInstanceManager {
                         })
                         .unwrap_or(term_logger);
 
-                    info!(logger, "Start subgraph");
+                    info!(
+                        logger,
+                        "Start subgraph";
+                        "data_sources" => manifest.data_sources.len()
+                    );
 
                     Self::start_subgraph(
                         logger.clone(),
