@@ -79,12 +79,12 @@ pub mod prelude {
     };
     pub use crate::components::subgraph::{
         DataSourceTemplateInfo, ProcessingState, RuntimeHost, RuntimeHostBuilder,
-        SubgraphAssignmentProvider, SubgraphInstance, SubgraphInstanceManager, SubgraphRegistrar,
-        SubgraphVersionSwitchingMode,
+        SubgraphAssignmentProvider, SubgraphInstance, SubgraphInstanceManager, SubgraphLoader,
+        SubgraphRegistrar, SubgraphVersionSwitchingMode,
     };
     pub use crate::components::{EventConsumer, EventProducer};
 
-    pub use crate::data::graphql::SerializableValue;
+    pub use crate::data::graphql::{SerializableValue, TryFromValue, ValueMap};
     pub use crate::data::query::{
         Query, QueryError, QueryExecutionError, QueryResult, QueryVariables,
     };
@@ -92,7 +92,7 @@ pub mod prelude {
     pub use crate::data::store::scalar::{BigDecimal, BigInt, BigIntSign};
     pub use crate::data::store::{
         AssignmentEvent, Attribute, Entity, NodeId, SubgraphEntityPair, SubgraphVersionSummary,
-        Value, ValueType,
+        TryFromEntity, Value, ValueType,
     };
     pub use crate::data::subgraph::schema::{SubgraphDeploymentEntity, TypedEntity};
     pub use crate::data::subgraph::{

@@ -1,6 +1,8 @@
 use futures::future::{loop_fn, Loop};
 use futures::sync::mpsc::{channel, Receiver, Sender};
-use graph::data::subgraph::schema::{EthereumContractDataSourceEntity, SubgraphDeploymentEntity};
+use graph::data::subgraph::schema::{
+    DynamicEthereumContractDataSourceEntity, SubgraphDeploymentEntity,
+};
 use graph::prelude::{SubgraphInstance as SubgraphInstanceTrait, *};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -308,6 +310,7 @@ where
         .fold(subgraph_state, move |subgraph_state, block| {
             let restart = restart.clone();
             let id = subgraph_state.deployment_id.clone();
+            let id_for_data_sources = id.clone();
             let instance = subgraph_state.instance.clone();
             let store = subgraph_state.store.clone();
             let block_stream_cancel_handle = block_stream_cancel_handle.clone();
@@ -417,7 +420,10 @@ where
                         // Add entity operations to the block state in order to persist
                         // the dynamic data sources
                         for data_source in data_sources.iter() {
-                            let entity = EthereumContractDataSourceEntity::from(data_source);
+                            let entity = DynamicEthereumContractDataSourceEntity::from((
+                                &id_for_data_sources,
+                                data_source,
+                            ));
                             let id = format!("{}-dynamic", Uuid::new_v4().to_simple());
                             let operations = entity.write_operations(id.as_ref());
                             block_state.entity_operations.extend(operations);

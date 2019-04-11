@@ -22,4 +22,6 @@ mod subgraph;
 pub use crate::graphql::GraphQlRunner;
 pub use crate::log::elastic::{elastic_logger, ElasticDrainConfig, ElasticLoggingConfig};
 pub use crate::log::split::split_logger;
-pub use crate::subgraph::{SubgraphAssignmentProvider, SubgraphInstanceManager, SubgraphRegistrar};
+pub use crate::subgraph::{
+    SubgraphAssignmentProvider, SubgraphInstanceManager, SubgraphLoader, SubgraphRegistrar,
+};
