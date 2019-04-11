@@ -7,8 +7,7 @@ use graph::prelude::{SubgraphInstance as SubgraphInstanceTrait, *};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::RwLock;
-use std::time::{Duration, Instant};
-use tokio::timer;
+use std::time::{Duration};
 use uuid::Uuid;
 
 use super::SubgraphInstance;
@@ -208,17 +207,13 @@ impl SubgraphInstanceManager {
             // issues due to several instances of the subgraph still running and
             // referencing their chain head listener; we need to find a more robust
             // solution
-            timer::Delay::new(Instant::now() + Duration::from_secs(10))
-                .map_err(|_| ())
-                .and_then(move |_| {
-                    run_subgraph(
-                        subgraph_state
-                            .logger
-                            .new(o!("restarts" => subgraph_state.restarts)),
-                        subgraph_state,
-                        instances.clone(),
-                    )
-                })
+            run_subgraph(
+                subgraph_state
+                    .logger
+                    .new(o!("restarts" => subgraph_state.restarts)),
+                subgraph_state,
+                instances.clone(),
+            )
         }));
 
         Ok(())
