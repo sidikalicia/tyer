@@ -224,9 +224,12 @@ impl SubgraphInstanceManager {
 
                             info!(
                                 logger,
-                                "Applying {} entity operation(s)",
-                                entity_operations.len()
+                                "Applying {} entity operation(s) = {:#?}",
+                                entity_operations.len(),
+                                entity_operations,
                             );
+
+                            panic!("Stopping before entity operations are committed.");
 
                             // Transact entity operations into the store and update the
                             // subgraph's block stream pointer
