@@ -229,8 +229,6 @@ impl SubgraphInstanceManager {
                                 entity_operations,
                             );
 
-                            panic!("Stopping before entity operations are committed.");
-
                             // Transact entity operations into the store and update the
                             // subgraph's block stream pointer
                             store

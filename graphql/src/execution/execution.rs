@@ -15,34 +15,24 @@ use crate::values::coercion;
 
 /// Contextual information passed around during query execution.
 #[derive(Clone)]
-pub struct ExecutionContext<'a, R1, R2>
+pub struct ExecutionContext<'a, R>
 where
-    R1: Resolver,
-    R2: Resolver,
+    R: Resolver,
 {
     /// The logger to use.
     pub logger: Logger,
 
     /// The schema to execute the query against.
-    pub schema: &'a Schema,
-
-    /// Introspection data that corresponds to the schema.
-    pub introspection_schema: &'a s::Document,
+    pub schema: Arc<Schema>,
 
     /// The query to execute.
     pub document: &'a q::Document,
 
     /// The resolver to use.
-    pub resolver: Arc<R1>,
-
-    /// The introspection resolver to use.
-    pub introspection_resolver: Arc<R2>,
+    pub resolver: Arc<R>,
 
     /// The current field stack (e.g. allUsers > friends > name).
     pub fields: Vec<&'a q::Field>,
-
-    /// Whether or not we're executing an introspection query
-    pub introspecting: bool,
 
     /// Variable values.
     pub variable_values: Arc<HashMap<q::Name, q::Value>>,
@@ -51,28 +41,42 @@ where
     pub deadline: Option<Instant>,
 }
 
-impl<'a, R1, R2> ExecutionContext<'a, R1, R2>
+impl<'a, R> ExecutionContext<'a, R>
 where
-    R1: Resolver,
-    R2: Resolver,
+    R: Resolver,
 {
     /// Creates a derived context for a new field (added to the top of the field stack).
-    pub fn for_field(&mut self, field: &'a q::Field) -> Self {
+    pub fn for_field(&self, field: &'a q::Field) -> Self {
         let mut ctx = self.clone();
         ctx.fields.push(field);
         ctx
     }
+
+    pub fn as_introspection_context(&self) -> ExecutionContext<IntrospectionResolver> {
+        // Create an introspection type store and resolver
+        let introspection_schema = introspection_schema(self.schema.id.clone());
+        let introspection_resolver = IntrospectionResolver::new(&self.logger, &self.schema);
+
+        ExecutionContext {
+            logger: self.logger.clone(),
+            resolver: Arc::new(introspection_resolver),
+            schema: Arc::new(introspection_schema),
+            document: &self.document,
+            fields: vec![],
+            variable_values: self.variable_values.clone(),
+            deadline: self.deadline,
+        }
+    }
 }
 
 /// Executes the root selection set of a query.
-pub fn execute_root_selection_set<'a, R1, R2>(
-    ctx: ExecutionContext<'a, R1, R2>,
+pub fn execute_root_selection_set<'a, R>(
+    ctx: &ExecutionContext<'a, R>,
     selection_set: &'a q::SelectionSet,
     initial_value: &Option<q::Value>,
 ) -> Result<q::Value, Vec<QueryExecutionError>>
 where
-    R1: Resolver,
-    R2: Resolver,
+    R: Resolver,
 {
     // Obtain the root Query type and fail if there isn't one
     let query_type = match sast::get_root_query_type(&ctx.schema.document) {
@@ -80,22 +84,80 @@ where
         None => return Err(vec![QueryExecutionError::NoRootQueryObjectType]),
     };
 
+    // Split the toplevel fields into introspection fields and
+    // 'normal' data fields
+    let mut data_set = q::SelectionSet {
+        span: selection_set.span.clone(),
+        items: Vec::new(),
+    };
+    let mut intro_set = q::SelectionSet {
+        span: selection_set.span.clone(),
+        items: Vec::new(),
+    };
+
+    let ictx = ctx.as_introspection_context();
+    let introspection_query_type = sast::get_root_query_type(&ictx.schema.document).unwrap();
+    for (_, fields) in collect_fields(ctx.clone(), query_type, selection_set, None) {
+        let name = fields[0].name.clone();
+        let selections = fields.into_iter().map(|f| q::Selection::Field(f.clone()));
+        // See if this is an introspection or data field. We don't worry about
+        // nonexistant fields; those will cause an error later when we execute
+        // the data_set SelectionSet
+        if sast::get_field_type(introspection_query_type, &name).is_some() {
+            intro_set.items.extend(selections)
+        } else {
+            data_set.items.extend(selections)
+        }
+    }
+
     // Execute the root selection set against the root query type
-    execute_selection_set(ctx, selection_set, query_type, initial_value)
+    if data_set.items.is_empty() {
+        // Only introspection
+        execute_selection_set(&ictx, &intro_set, introspection_query_type, initial_value)
+    } else if intro_set.items.is_empty() {
+        // Only data
+        execute_selection_set(&ctx, &data_set, query_type, initial_value)
+    } else {
+        // Both introspection and data
+        let mut values = execute_selection_set_to_map(&ctx, &data_set, query_type, initial_value)?;
+        values.extend(execute_selection_set_to_map(
+            &ictx,
+            &intro_set,
+            introspection_query_type,
+            initial_value,
+        )?);
+        Ok(q::Value::Object(values))
+    }
 }
 
 /// Executes a selection set, requiring the result to be of the given object type.
 ///
 /// Allows passing in a parent value during recursive processing of objects and their fields.
-pub fn execute_selection_set<'a, R1, R2>(
-    mut ctx: ExecutionContext<'a, R1, R2>,
+pub fn execute_selection_set<'a, R>(
+    ctx: &ExecutionContext<'a, R>,
     selection_set: &'a q::SelectionSet,
     object_type: &s::ObjectType,
     object_value: &Option<q::Value>,
 ) -> Result<q::Value, Vec<QueryExecutionError>>
 where
-    R1: Resolver,
-    R2: Resolver,
+    R: Resolver,
+{
+    Ok(q::Value::Object(execute_selection_set_to_map(
+        ctx,
+        selection_set,
+        object_type,
+        object_value,
+    )?))
+}
+
+fn execute_selection_set_to_map<'a, R>(
+    ctx: &ExecutionContext<'a, R>,
+    selection_set: &'a q::SelectionSet,
+    object_type: &s::ObjectType,
+    object_value: &Option<q::Value>,
+) -> Result<BTreeMap<String, q::Value>, Vec<QueryExecutionError>>
+where
+    R: Resolver,
 {
     let mut errors: Vec<QueryExecutionError> = Vec::new();
     let mut result_map: BTreeMap<String, q::Value> = BTreeMap::new();
@@ -114,16 +176,11 @@ where
         }
 
         // If the field exists on the object, execute it and add its result to the result map
-        if let Some((ref field, introspecting)) =
-            get_field_type(ctx.clone(), object_type, &fields[0].name)
-        {
+        if let Some(ref field) = sast::get_field_type(object_type, &fields[0].name) {
             // Push the new field onto the context's field stack
-            let mut ctx = ctx.for_field(&fields[0]);
+            let ctx = ctx.for_field(&fields[0]);
 
-            // Remember whether or not we're introspecting now
-            ctx.introspecting = introspecting;
-
-            match execute_field(ctx, object_type, object_value, &fields[0], field, fields) {
+            match execute_field(&ctx, object_type, object_value, &fields[0], field, fields) {
                 Ok(v) => {
                     result_map.insert(response_key.to_owned(), v);
                 }
@@ -141,7 +198,7 @@ where
     }
 
     if errors.is_empty() && !result_map.is_empty() {
-        Ok(q::Value::Object(result_map))
+        Ok(result_map)
     } else {
         if errors.is_empty() {
             errors.push(QueryExecutionError::EmptySelectionSet(
@@ -153,15 +210,14 @@ where
 }
 
 /// Collects fields of a selection set.
-pub fn collect_fields<'a, R1, R2>(
-    ctx: ExecutionContext<'a, R1, R2>,
+pub fn collect_fields<'a, R>(
+    ctx: ExecutionContext<'a, R>,
     object_type: &s::ObjectType,
     selection_set: &'a q::SelectionSet,
     visited_fragments: Option<HashSet<&'a q::Name>>,
 ) -> IndexMap<&'a String, Vec<&'a q::Field>>
 where
-    R1: Resolver,
-    R2: Resolver,
+    R: Resolver,
 {
     let mut visited_fragments = visited_fragments.unwrap_or_default();
     let mut grouped_fields: IndexMap<_, Vec<_>> = IndexMap::new();
@@ -243,27 +299,19 @@ where
 }
 
 /// Determines whether a fragment is applicable to the given object type.
-fn does_fragment_type_apply<'a, R1, R2>(
-    ctx: ExecutionContext<'a, R1, R2>,
+fn does_fragment_type_apply<'a, R>(
+    ctx: ExecutionContext<'a, R>,
     object_type: &s::ObjectType,
     fragment_type: &q::TypeCondition,
 ) -> bool
 where
-    R1: Resolver,
-    R2: Resolver,
+    R: Resolver,
 {
     // This is safe to do, as TypeCondition only has a single `On` variant.
     let q::TypeCondition::On(ref name) = fragment_type;
 
     // Resolve the type the fragment applies to based on its name
-    let named_type = sast::get_named_type(
-        if ctx.introspecting {
-            ctx.introspection_schema
-        } else {
-            &ctx.schema.document
-        },
-        name,
-    );
+    let named_type = sast::get_named_type(&ctx.schema.document, name);
 
     match named_type {
         // The fragment applies to the object type if its type is the same object type
@@ -293,8 +341,8 @@ where
 }
 
 /// Executes a field.
-fn execute_field<'a, R1, R2>(
-    ctx: ExecutionContext<'a, R1, R2>,
+fn execute_field<'a, R>(
+    ctx: &ExecutionContext<'a, R>,
     object_type: &s::ObjectType,
     object_value: &Option<q::Value>,
     field: &'a q::Field,
@@ -302,13 +350,12 @@ fn execute_field<'a, R1, R2>(
     fields: Vec<&'a q::Field>,
 ) -> Result<q::Value, Vec<QueryExecutionError>>
 where
-    R1: Resolver,
-    R2: Resolver,
+    R: Resolver,
 {
-    coerce_argument_values(&ctx, object_type, field)
+    coerce_argument_values(ctx, object_type, field)
         .and_then(|argument_values| {
             resolve_field_value(
-                ctx.clone(),
+                ctx,
                 object_type,
                 object_value,
                 field,
@@ -321,8 +368,8 @@ where
 }
 
 /// Resolves the value of a field.
-fn resolve_field_value<'a, R1, R2>(
-    ctx: ExecutionContext<'a, R1, R2>,
+fn resolve_field_value<'a, R>(
+    ctx: &ExecutionContext<'a, R>,
     object_type: &s::ObjectType,
     object_value: &Option<q::Value>,
     field: &q::Field,
@@ -331,8 +378,7 @@ fn resolve_field_value<'a, R1, R2>(
     argument_values: &HashMap<&q::Name, q::Value>,
 ) -> Result<q::Value, Vec<QueryExecutionError>>
 where
-    R1: Resolver,
-    R2: Resolver,
+    R: Resolver,
 {
     match field_type {
         s::Type::NonNullType(inner_type) => resolve_field_value(
@@ -368,8 +414,8 @@ where
 }
 
 /// Resolves the value of a field that corresponds to a named type.
-fn resolve_field_value_for_named_type<'a, R1, R2>(
-    ctx: ExecutionContext<'a, R1, R2>,
+fn resolve_field_value_for_named_type<'a, R>(
+    ctx: &ExecutionContext<'a, R>,
     object_type: &s::ObjectType,
     object_value: &Option<q::Value>,
     field: &q::Field,
@@ -378,56 +424,30 @@ fn resolve_field_value_for_named_type<'a, R1, R2>(
     argument_values: &HashMap<&q::Name, q::Value>,
 ) -> Result<q::Value, Vec<QueryExecutionError>>
 where
-    R1: Resolver,
-    R2: Resolver,
+    R: Resolver,
 {
     // Try to resolve the type name into the actual type
-    let named_type = sast::get_named_type(
-        if ctx.introspecting {
-            ctx.introspection_schema
-        } else {
-            &ctx.schema.document
-        },
-        type_name,
-    )
-    .ok_or_else(|| QueryExecutionError::NamedTypeError(type_name.to_string()))?;
+    let named_type = sast::get_named_type(&ctx.schema.document, type_name)
+        .ok_or_else(|| QueryExecutionError::NamedTypeError(type_name.to_string()))?;
 
     match named_type {
         // Let the resolver decide how the field (with the given object type)
         // is resolved into an entity based on the (potential) parent object
-        s::TypeDefinition::Object(t) => {
-            if ctx.introspecting {
-                ctx.introspection_resolver.resolve_object(
-                    object_value,
-                    field,
-                    field_definition,
-                    t.into(),
-                    argument_values,
-                    &BTreeMap::new(), // The introspection schema has no interfaces.
-                )
-            } else {
-                ctx.resolver.resolve_object(
-                    object_value,
-                    field,
-                    field_definition,
-                    t.into(),
-                    argument_values,
-                    ctx.schema.types_for_interface(),
-                )
-            }
-        }
+        s::TypeDefinition::Object(t) => ctx.resolver.resolve_object(
+            object_value,
+            field,
+            field_definition,
+            t.into(),
+            argument_values,
+            ctx.schema.types_for_interface(),
+        ),
 
         // Let the resolver decide how values in the resolved object value
         // map to values of GraphQL enums
         s::TypeDefinition::Enum(t) => match object_value {
             Some(q::Value::Object(o)) => {
-                if ctx.introspecting {
-                    ctx.introspection_resolver
-                        .resolve_enum_value(field, t, o.get(&field.name))
-                } else {
-                    ctx.resolver
-                        .resolve_enum_value(field, t, o.get(&field.name))
-                }
+                ctx.resolver
+                    .resolve_enum_value(field, t, o.get(&field.name))
             }
             _ => Ok(q::Value::Null),
         },
@@ -436,43 +456,20 @@ where
         // map to values of GraphQL scalars
         s::TypeDefinition::Scalar(t) => match object_value {
             Some(q::Value::Object(o)) => {
-                if ctx.introspecting {
-                    ctx.introspection_resolver.resolve_scalar_value(
-                        object_type,
-                        o,
-                        field,
-                        t,
-                        o.get(&field.name),
-                    )
-                } else {
-                    ctx.resolver
-                        .resolve_scalar_value(object_type, o, field, t, o.get(&field.name))
-                }
+                ctx.resolver
+                    .resolve_scalar_value(object_type, o, field, t, o.get(&field.name))
             }
             _ => Ok(q::Value::Null),
         },
 
-        s::TypeDefinition::Interface(i) => {
-            if ctx.introspecting {
-                ctx.introspection_resolver.resolve_object(
-                    object_value,
-                    field,
-                    field_definition,
-                    i.into(),
-                    argument_values,
-                    &BTreeMap::new(), // The introspection schema has no interfaces.
-                )
-            } else {
-                ctx.resolver.resolve_object(
-                    object_value,
-                    field,
-                    field_definition,
-                    i.into(),
-                    argument_values,
-                    ctx.schema.types_for_interface(),
-                )
-            }
-        }
+        s::TypeDefinition::Interface(i) => ctx.resolver.resolve_object(
+            object_value,
+            field,
+            field_definition,
+            i.into(),
+            argument_values,
+            ctx.schema.types_for_interface(),
+        ),
 
         s::TypeDefinition::Union(_) => Err(QueryExecutionError::Unimplemented("unions".to_owned())),
 
@@ -482,8 +479,8 @@ where
 }
 
 /// Resolves the value of a field that corresponds to a list type.
-fn resolve_field_value_for_list_type<'a, R1, R2>(
-    ctx: ExecutionContext<'a, R1, R2>,
+fn resolve_field_value_for_list_type<'a, R>(
+    ctx: &ExecutionContext<'a, R>,
     object_type: &s::ObjectType,
     object_value: &Option<q::Value>,
     field: &q::Field,
@@ -492,8 +489,7 @@ fn resolve_field_value_for_list_type<'a, R1, R2>(
     argument_values: &HashMap<&q::Name, q::Value>,
 ) -> Result<q::Value, Vec<QueryExecutionError>>
 where
-    R1: Resolver,
-    R2: Resolver,
+    R: Resolver,
 {
     match inner_type {
         s::Type::NonNullType(inner_type) => resolve_field_value_for_list_type(
@@ -507,30 +503,15 @@ where
         ),
 
         s::Type::NamedType(ref type_name) => {
-            let named_type = sast::get_named_type(
-                if ctx.introspecting {
-                    ctx.introspection_schema
-                } else {
-                    &ctx.schema.document
-                },
-                type_name,
-            )
-            .ok_or_else(|| QueryExecutionError::NamedTypeError(type_name.to_string()))?;
+            let named_type = sast::get_named_type(&ctx.schema.document, type_name)
+                .ok_or_else(|| QueryExecutionError::NamedTypeError(type_name.to_string()))?;
 
             match named_type {
                 // Let the resolver decide how the list field (with the given item object type)
                 // is resolved into a entities based on the (potential) parent object
-                s::TypeDefinition::Object(t) => if ctx.introspecting {
-                    ctx.introspection_resolver.resolve_objects(
-                        object_value,
-                        &field.name,
-                        field_definition,
-                        t.into(),
-                        argument_values,
-                        &BTreeMap::new(), // The introspection schema has no interfaces.
-                    )
-                } else {
-                    ctx.resolver.resolve_objects(
+                s::TypeDefinition::Object(t) => ctx
+                    .resolver
+                    .resolve_objects(
                         object_value,
                         &field.name,
                         field_definition,
@@ -538,23 +519,14 @@ where
                         argument_values,
                         ctx.schema.types_for_interface(),
                     )
-                }
-                .map_err(|e| vec![e]),
+                    .map_err(|e| vec![e]),
 
                 // Let the resolver decide how values in the resolved object value
                 // map to values of GraphQL enums
                 s::TypeDefinition::Enum(t) => match object_value {
                     Some(q::Value::Object(o)) => {
-                        if ctx.introspecting {
-                            ctx.introspection_resolver.resolve_enum_values(
-                                field,
-                                &t,
-                                o.get(&field.name),
-                            )
-                        } else {
-                            ctx.resolver
-                                .resolve_enum_values(field, &t, o.get(&field.name))
-                        }
+                        ctx.resolver
+                            .resolve_enum_values(field, &t, o.get(&field.name))
                     }
                     _ => Ok(q::Value::Null),
                 },
@@ -563,31 +535,15 @@ where
                 // map to values of GraphQL scalars
                 s::TypeDefinition::Scalar(t) => match object_value {
                     Some(q::Value::Object(o)) => {
-                        if ctx.introspecting {
-                            ctx.introspection_resolver.resolve_scalar_values(
-                                field,
-                                &t,
-                                o.get(&field.name),
-                            )
-                        } else {
-                            ctx.resolver
-                                .resolve_scalar_values(field, &t, o.get(&field.name))
-                        }
+                        ctx.resolver
+                            .resolve_scalar_values(field, &t, o.get(&field.name))
                     }
                     _ => Ok(q::Value::Null),
                 },
 
-                s::TypeDefinition::Interface(t) => if ctx.introspecting {
-                    ctx.introspection_resolver.resolve_objects(
-                        object_value,
-                        &field.name,
-                        field_definition,
-                        t.into(),
-                        argument_values,
-                        &BTreeMap::new(), // The introspection schema has no interfaces.
-                    )
-                } else {
-                    ctx.resolver.resolve_objects(
+                s::TypeDefinition::Interface(t) => ctx
+                    .resolver
+                    .resolve_objects(
                         object_value,
                         &field.name,
                         field_definition,
@@ -595,8 +551,7 @@ where
                         argument_values,
                         ctx.schema.types_for_interface(),
                     )
-                }
-                .map_err(|e| vec![e]),
+                    .map_err(|e| vec![e]),
 
                 s::TypeDefinition::Union(_) => Err(vec![QueryExecutionError::Unimplemented(
                     "unions".to_owned(),
@@ -616,21 +571,20 @@ where
 }
 
 /// Ensures that a value matches the expected return type.
-fn complete_value<'a, R1, R2>(
-    ctx: ExecutionContext<'a, R1, R2>,
+fn complete_value<'a, R>(
+    ctx: &ExecutionContext<'a, R>,
     field: &'a q::Field,
     field_type: &'a s::Type,
     fields: Vec<&'a q::Field>,
     resolved_value: q::Value,
 ) -> Result<q::Value, Vec<QueryExecutionError>>
 where
-    R1: Resolver,
-    R2: Resolver,
+    R: Resolver,
 {
     match field_type {
         // Fail if the field type is non-null but the value is null
         s::Type::NonNullType(inner_type) => {
-            return match complete_value(ctx.clone(), field, inner_type, fields, resolved_value)? {
+            return match complete_value(ctx, field, inner_type, fields, resolved_value)? {
                 q::Value::Null => Err(vec![QueryExecutionError::NonNullError(
                     field.position,
                     field.name.to_string(),
@@ -653,7 +607,7 @@ where
                     let mut out = Vec::with_capacity(values.len());
                     for value in values.into_iter() {
                         out.push(complete_value(
-                            ctx.clone(),
+                            ctx,
                             field,
                             inner_type,
                             fields.clone(),
@@ -672,15 +626,7 @@ where
         }
 
         s::Type::NamedType(name) => {
-            let named_type = sast::get_named_type(
-                if ctx.introspecting {
-                    ctx.introspection_schema
-                } else {
-                    &ctx.schema.document
-                },
-                name,
-            )
-            .unwrap();
+            let named_type = sast::get_named_type(&ctx.schema.document, name).unwrap();
 
             match named_type {
                 // Complete scalar values; we're assuming that the resolver has
@@ -693,7 +639,7 @@ where
 
                 // Complete object types recursively
                 s::TypeDefinition::Object(object_type) => execute_selection_set(
-                    ctx.clone(),
+                    ctx,
                     &merge_selection_sets(fields),
                     object_type,
                     &Some(resolved_value),
@@ -701,11 +647,10 @@ where
 
                 // Resolve interface types using the resolved value and complete the value recursively
                 s::TypeDefinition::Interface(_) => {
-                    let object_type =
-                        resolve_abstract_type(ctx.clone(), named_type, &resolved_value)?;
+                    let object_type = resolve_abstract_type(ctx, named_type, &resolved_value)?;
 
                     execute_selection_set(
-                        ctx.clone(),
+                        ctx,
                         &merge_selection_sets(fields),
                         object_type,
                         &Some(resolved_value),
@@ -714,11 +659,10 @@ where
 
                 // Resolve union types using the resolved value and complete the value recursively
                 s::TypeDefinition::Union(_) => {
-                    let object_type =
-                        resolve_abstract_type(ctx.clone(), named_type, &resolved_value)?;
+                    let object_type = resolve_abstract_type(ctx, named_type, &resolved_value)?;
 
                     execute_selection_set(
-                        ctx.clone(),
+                        ctx,
                         &merge_selection_sets(fields),
                         object_type,
                         &Some(resolved_value),
@@ -734,27 +678,18 @@ where
 }
 
 /// Resolves an abstract type (interface, union) into an object type based on the given value.
-fn resolve_abstract_type<'a, R1, R2>(
-    ctx: ExecutionContext<'a, R1, R2>,
+fn resolve_abstract_type<'a, R>(
+    ctx: &'a ExecutionContext<'a, R>,
     abstract_type: &'a s::TypeDefinition,
     object_value: &q::Value,
 ) -> Result<&'a s::ObjectType, Vec<QueryExecutionError>>
 where
-    R1: Resolver,
-    R2: Resolver,
+    R: Resolver,
 {
     // Let the resolver handle the type resolution, return an error if the resolution
     // yields nothing
     ctx.resolver
-        .resolve_abstract_type(
-            if ctx.introspecting {
-                ctx.introspection_schema
-            } else {
-                &ctx.schema.document
-            },
-            abstract_type,
-            object_value,
-        )
+        .resolve_abstract_type(&ctx.schema.document, abstract_type, object_value)
         .ok_or_else(|| {
             vec![QueryExecutionError::AbstractTypeError(
                 sast::get_type_name(abstract_type).to_string(),
@@ -791,28 +726,18 @@ fn merge_selection_sets(fields: Vec<&q::Field>) -> q::SelectionSet {
 }
 
 /// Coerces argument values into GraphQL values.
-pub fn coerce_argument_values<'a, R1, R2>(
-    ctx: &ExecutionContext<'_, R1, R2>,
+pub fn coerce_argument_values<'a, R>(
+    ctx: &ExecutionContext<'_, R>,
     object_type: &'a s::ObjectType,
     field: &q::Field,
 ) -> Result<HashMap<&'a q::Name, q::Value>, Vec<QueryExecutionError>>
 where
-    R1: Resolver,
-    R2: Resolver,
+    R: Resolver,
 {
     let mut coerced_values = HashMap::new();
     let mut errors = vec![];
 
-    let resolver = |name: &Name| {
-        sast::get_named_type(
-            if ctx.introspecting {
-                ctx.introspection_schema
-            } else {
-                &ctx.schema.document
-            },
-            name,
-        )
-    };
+    let resolver = |name: &Name| sast::get_named_type(&ctx.schema.document, name);
 
     for argument_def in sast::get_argument_definitions(object_type, &field.name)
         .into_iter()
@@ -833,24 +758,6 @@ where
     } else {
         Err(errors)
     }
-}
-
-fn get_field_type<'a, R1, R2>(
-    ctx: ExecutionContext<'a, R1, R2>,
-    object_type: &'a s::ObjectType,
-    name: &'a s::Name,
-) -> Option<(&'a s::Field, bool)>
-where
-    R1: Resolver,
-    R2: Resolver,
-{
-    // Resolve __schema and __Type using the introspection schema
-    let introspection_query_type = sast::get_root_query_type(ctx.introspection_schema).unwrap();
-    if let Some(ty) = sast::get_field_type(introspection_query_type, name) {
-        return Some((ty, true));
-    }
-
-    sast::get_field_type(object_type, name).map(|t| (t, ctx.introspecting))
 }
 
 /// Coerces variable values for an operation.
