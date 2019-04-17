@@ -7,6 +7,7 @@ use std::env;
 use std::mem;
 use std::sync::Mutex;
 use std::cmp::Ordering;
+use tiny_keccak::keccak256;
 
 use graph::components::forward;
 use graph::data::subgraph::schema::{
@@ -17,8 +18,6 @@ use graph::prelude::{
 };
 use graph::util::ethereum::string_to_h256;
 use graph::web3::types::*;
-
-use tiny_keccak::keccak256;
 
 enum BlockStreamState {
     /// The BlockStream is new and has not yet been polled.
