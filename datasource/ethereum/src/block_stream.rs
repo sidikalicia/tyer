@@ -1240,14 +1240,14 @@ fn create_call_filter_from_subgraph(manifest: &SubgraphManifest) -> Option<Ether
             data_source.source.address.is_some()
         })
         .flat_map(|data_source| {
-            let contract_addr = data_source.source.address;
+            let contract_addr = data_source.source.address.unwrap();
             data_source
                 .mapping
                 .call_handlers
                 .iter()
                 .map(move |call_handler| {
                     let sig = keccak256(call_handler.function.as_bytes());
-                    (contract_addr.unwrap(), [sig[0], sig[1], sig[2], sig[3]])
+                    (contract_addr, [sig[0], sig[1], sig[2], sig[3]])
                 })
         })
         .collect::<EthereumCallFilter>();
@@ -1258,26 +1258,54 @@ fn create_call_filter_from_subgraph(manifest: &SubgraphManifest) -> Option<Ether
 }
 
 fn create_block_filter_from_subgraph(manifest: &SubgraphManifest) -> Option<EthereumBlockFilter> {
-    let block_filter = manifest
+    let contract_addresses = manifest
         .data_sources
         .iter()
         .filter(|data_source| {
-            data_source
+            let has_address = data_source
+                .source
+                .address
+                .is_some();
+            let has_block_handler_with_call_filter = data_source
                 .mapping
-                .block_handler
-                .is_some() && data_source.
-                source.
-                address.
-                is_some()
+                .block_handlers
+                .iter()
+                .any(|block_handler| {
+                    match block_handler.filter {
+                        Some(ref filter) if filter.clone().is_kind_call() => return true,
+                        _ => return false,
+                    }
+                });
+            has_address && has_block_handler_with_call_filter
         })
         .map(|data_source| {
             data_source.source.address.unwrap()
         })
-        .collect::<EthereumBlockFilter>();
-    match block_filter.contract_addresses.len() {
-        0 => return None,
-        _ => return Some(block_filter),
+        .collect::<HashSet<Address>>();
+    let trigger_each_block = manifest
+        .data_sources
+        .iter()
+        .any(|data_source| {
+            let has_address = data_source
+                .source
+                .address
+                .is_some();
+            let has_block_handler_without_filter = data_source
+                .mapping
+                .block_handlers
+                .iter()
+                .any(|block_handler| {
+                    block_handler.filter.is_none()
+                });
+            has_address && has_block_handler_without_filter
+        });
+    if contract_addresses.is_empty() && !trigger_each_block {
+        return None
     }
+    return Some(EthereumBlockFilter {
+        contract_addresses,
+        trigger_each_block,
+    })
 }
 
 fn parse_triggers(
@@ -1398,15 +1426,19 @@ fn parse_block_triggers(
     if block_filter.is_none() {
         return vec![]
     }
-    let call_filter = EthereumCallFilter::from(block_filter.unwrap());
+    let call_filter = EthereumCallFilter::from(block_filter.clone().unwrap());
     let calls = &block.calls.clone().unwrap();
-    calls
+    let mut triggers = calls
         .iter()
         .filter(move |call| {
             call_filter.matches(call)
         })
         .map(move |call| {
-            EthereumTrigger::Block(call.clone())
+            EthereumTrigger::Block(EthereumBlockTriggerType::WithCallTo(call.to))
         })
-        .collect()
+        .collect::<Vec<EthereumTrigger>>();
+    if block_filter.unwrap().trigger_each_block {
+        triggers.push(EthereumTrigger::Block(EthereumBlockTriggerType::Every));
+    }
+    triggers
 }
