@@ -185,7 +185,7 @@ impl SubgraphInstanceManager {
                     } else {
                         info!(
                             logger,
-                            "{} trigger found in this block for this subgraph",
+                            "{} triggers found in this block for this subgraph",
                             triggers.len()
                         );
                     }
