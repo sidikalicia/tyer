@@ -1237,6 +1237,7 @@ fn create_log_filter_from_subgraph(manifest: &SubgraphManifest) -> Option<Ethere
                 })
         })
         .collect::<EthereumLogFilter>();
+    
     match log_filter.contract_address_and_event_sig_pairs.len() {
         0 => return None,
         _ => return Some(log_filter),
@@ -1260,6 +1261,7 @@ fn create_call_filter_from_subgraph(manifest: &SubgraphManifest) -> Option<Ether
                 })
         })
         .collect::<EthereumCallFilter>();
+    
     match call_filter.contract_addresses_function_signatures.len() {
         0 => return None,
         _ => return Some(call_filter),
