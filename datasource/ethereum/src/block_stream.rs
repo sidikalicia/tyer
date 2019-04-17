@@ -64,9 +64,9 @@ enum ReconciliationStep {
     /// Move forwards, processing one or more blocks.
     ProcessDescendantBlocks {
         from: EthereumBlockPointer,
-        log_filter_opt: Option<EthereumLogFilter>,
-        call_filter_opt: Option<EthereumCallFilter>,
-        block_filter_opt: Option<EthereumBlockFilter>,
+        log_filter: Option<EthereumLogFilter>,
+        call_filter: Option<EthereumCallFilter>,
+        block_filter: Option<EthereumBlockFilter>,
         descendant_blocks: Box<Stream<Item = EthereumBlockWithCalls, Error = Error> + Send>,
     },
 
@@ -411,9 +411,9 @@ where
                                             // Proceed to those blocks
                                             ReconciliationStep::ProcessDescendantBlocks {
                                                 from: subgraph_ptr,
-                                                log_filter_opt: log_filter.clone(),
-                                                call_filter_opt: call_filter.clone(),
-                                                block_filter_opt: block_filter.clone(),
+                                                log_filter: log_filter.clone(),
+                                                call_filter: call_filter.clone(),
+                                                block_filter: block_filter.clone(),
                                                 descendant_blocks: Box::new(ctx.load_blocks(descendant_hashes)),
                                             }
                                         ))
@@ -498,9 +498,9 @@ where
                         );
                         Box::new(future::ok(ReconciliationStep::ProcessDescendantBlocks {
                             from: subgraph_ptr,
-                            log_filter_opt: log_filter.clone(),
-                            call_filter_opt: call_filter.clone(),
-                            block_filter_opt: block_filter.clone(),
+                            log_filter: log_filter.clone(),
+                            call_filter: call_filter.clone(),
+                            block_filter: block_filter.clone(),
                             descendant_blocks: Box::new(stream::futures_ordered(vec![
                                 block_future,
                             ])),
@@ -579,15 +579,15 @@ where
             }
             ReconciliationStep::ProcessDescendantBlocks {
                 from,
-                log_filter_opt,
-                call_filter_opt,
-                block_filter_opt,
+                log_filter,
+                call_filter,
+                block_filter,
                 descendant_blocks,
             } => {
                 let mut subgraph_ptr = from;
-                let log_filter_opt = log_filter_opt.clone();
-                let call_filter_opt = call_filter_opt.clone();
-                let block_filter_opt = block_filter_opt.clone();
+                let log_filter = log_filter.clone();
+                let call_filter = call_filter.clone();
+                let block_filter = block_filter.clone();
 
                 // Advance the subgraph ptr to each of the specified descendants and yield each
                 // block with relevant events.
@@ -627,9 +627,9 @@ where
                             })
                             .and_then(move |descendant_block| {
                                 let triggers = match parse_triggers(
-                                    log_filter_opt.clone(),
-                                    call_filter_opt.clone(),
-                                    block_filter_opt.clone(),
+                                    log_filter.clone(),
+                                    call_filter.clone(),
+                                    block_filter.clone(),
                                     &descendant_block,
                                 ) {
                                     Ok(triggers) => triggers,
@@ -1237,7 +1237,7 @@ fn create_log_filter_from_subgraph(manifest: &SubgraphManifest) -> Option<Ethere
                 })
         })
         .collect::<EthereumLogFilter>();
-    
+
     match log_filter.contract_address_and_event_sig_pairs.len() {
         0 => return None,
         _ => return Some(log_filter),
@@ -1261,7 +1261,7 @@ fn create_call_filter_from_subgraph(manifest: &SubgraphManifest) -> Option<Ether
                 })
         })
         .collect::<EthereumCallFilter>();
-    
+
     match call_filter.contract_addresses_function_signatures.len() {
         0 => return None,
         _ => return Some(call_filter),
