@@ -177,7 +177,7 @@ impl SubgraphInstanceManager {
                         "block_number" => format!("{:?}", block.block.number.unwrap()),
                         "block_hash" => format!("{:?}", block.block.hash.unwrap())
                     ));
-                    
+
                     if triggers.len() == 0 {
                         debug!(logger, "No triggers found in this block for this subgraph");
                     } else if triggers.len() == 1 {
@@ -189,7 +189,7 @@ impl SubgraphInstanceManager {
                             triggers.len()
                         );
                     }
-                    
+
                     // Process events one after the other, passing in entity operations
                     // collected previously to every new event being processed
                     let block_for_process = Arc::new(block);
@@ -201,14 +201,9 @@ impl SubgraphInstanceManager {
                             let logger = logger_for_process.clone();
                             let instance = instance.clone();
                             let block = block_for_process.clone();
-                            instance.process_trigger(
-                                &logger,
-                                block,
-                                trigger,
-                                entity_operations
-                            ).map_err(|e| {
-                                format_err!("Failed to process trigger: {}", e)
-                            })
+                            instance
+                                .process_trigger(&logger, block, trigger, entity_operations)
+                                .map_err(|e| format_err!("Failed to process trigger: {}", e))
                         })
                         .and_then(move |entity_operations| {
                             let block = block_for_transact.clone();

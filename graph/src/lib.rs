@@ -61,10 +61,11 @@ pub mod prelude {
 
     pub use crate::components::ethereum::{
         BlockStream, BlockStreamBuilder, ChainHeadUpdate, ChainHeadUpdateListener, EthereumAdapter,
-        EthereumAdapterError, EthereumBlock, EthereumBlockWithCalls, EthereumBlockWithTriggers,
-        EthereumBlockData, EthereumBlockPointer, EthereumEventData, EthereumLogFilter,
-        EthereumCallFilter, EthereumBlockFilter, EthereumNetworkIdentifier, EthereumTransactionData,
-        EthereumTrigger, EthereumBlockTriggerType, EthereumCall, EthereumCallData,
+        EthereumAdapterError, EthereumBlock, EthereumBlockData, EthereumBlockFilter,
+        EthereumBlockPointer, EthereumBlockTriggerType, EthereumBlockWithCalls,
+        EthereumBlockWithTriggers, EthereumCall, EthereumCallData, EthereumCallFilter,
+        EthereumEventData, EthereumLogFilter, EthereumNetworkIdentifier, EthereumTransactionData,
+        EthereumTrigger,
     };
     pub use crate::components::graphql::{
         GraphQlRunner, QueryResultFuture, SubscriptionResultFuture,
@@ -97,10 +98,11 @@ pub mod prelude {
     };
     pub use crate::data::subgraph::schema::{SubgraphDeploymentEntity, TypedEntity};
     pub use crate::data::subgraph::{
-        CreateSubgraphResult, DataSource, Link, MappingABI, MappingEventHandler, MappingCallHandler,
-        MappingBlockHandler, SubgraphAssignmentProviderError, SubgraphAssignmentProviderEvent, SubgraphDeploymentId, 
-        SubgraphManifest, SubgraphManifestResolveError, SubgraphName, SubgraphRegistrarError,
-        SubgraphManifestValidationError, BlockHandlerFilter,
+        BlockHandlerFilter, CreateSubgraphResult, DataSource, Link, MappingABI,
+        MappingBlockHandler, MappingCallHandler, MappingEventHandler,
+        SubgraphAssignmentProviderError, SubgraphAssignmentProviderEvent, SubgraphDeploymentId,
+        SubgraphManifest, SubgraphManifestResolveError, SubgraphManifestValidationError,
+        SubgraphName, SubgraphRegistrarError,
     };
     pub use crate::data::subscription::{
         QueryResultStream, Subscription, SubscriptionError, SubscriptionResult,

@@ -83,21 +83,22 @@ where
                 let log = Arc::new(log);
                 // Process the log in each host in the same order the corresponding data sources appear
                 // in the subgraph manifest
-                let eops = future::result(transaction)
-                    .and_then(|transaction| {
-                        stream::iter_ok(matching_hosts)
-                            .fold(entity_operations, move |entity_operations, host| {
-                                host.process_log(
-                                    logger.clone(),
-                                    block.clone(),
-                                    transaction.clone(),
-                                    log.clone(),
-                                    entity_operations,
-                                )
-                            })
-                    });
+                let eops = future::result(transaction).and_then(|transaction| {
+                    stream::iter_ok(matching_hosts).fold(
+                        entity_operations,
+                        move |entity_operations, host| {
+                            host.process_log(
+                                logger.clone(),
+                                block.clone(),
+                                transaction.clone(),
+                                log.clone(),
+                                entity_operations,
+                            )
+                        },
+                    )
+                });
                 Box::new(eops)
-            },
+            }
             EthereumTrigger::Call(call) => {
                 let transaction = block
                     .transaction_for_call(&call)
@@ -110,21 +111,22 @@ where
                     .cloned()
                     .collect();
                 let call = Arc::new(call);
-                let eops = future::result(transaction)
-                    .and_then(|transaction| {
-                        stream::iter_ok(matching_hosts)
-                            .fold(entity_operations, move |entity_operations, host| {
-                                host.process_call(
-                                    logger.clone(),
-                                    block.clone(),
-                                    transaction.clone(),
-                                    call.clone(),
-                                    entity_operations,
-                                )
-                            })
-                    });
+                let eops = future::result(transaction).and_then(|transaction| {
+                    stream::iter_ok(matching_hosts).fold(
+                        entity_operations,
+                        move |entity_operations, host| {
+                            host.process_call(
+                                logger.clone(),
+                                block.clone(),
+                                transaction.clone(),
+                                call.clone(),
+                                entity_operations,
+                            )
+                        },
+                    )
+                });
                 Box::new(eops)
-            },
+            }
             EthereumTrigger::Block(trigger_type) => {
                 let matching_hosts: Vec<_> = self
                     .hosts
@@ -132,15 +134,17 @@ where
                     .filter(|host| host.matches_block(trigger_type.clone()))
                     .cloned()
                     .collect();
-                let eops = stream::iter_ok(matching_hosts)
-                    .fold(entity_operations, move |entity_operations, host| {
+                let eops = stream::iter_ok(matching_hosts).fold(
+                    entity_operations,
+                    move |entity_operations, host| {
                         host.process_block(
                             logger.clone(),
                             block.clone(),
                             trigger_type.clone(),
                             entity_operations,
                         )
-                    });
+                    },
+                );
                 Box::new(eops)
             }
         }

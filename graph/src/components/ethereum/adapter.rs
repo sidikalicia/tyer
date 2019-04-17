@@ -2,7 +2,7 @@ use ethabi::{Bytes, Error as ABIError, Function, ParamType, Token};
 use failure::{Error, SyncFailure};
 use futures::Future;
 use slog::Logger;
-use std::collections::{HashSet, HashMap};
+use std::collections::{HashMap, HashSet};
 use std::iter::FromIterator;
 use web3::error::Error as Web3Error;
 use web3::types::*;
@@ -150,23 +150,24 @@ impl EthereumCallFilter {
         // Ensure the call is to a contract the filter expressed an interest in
         if !self
             .contract_addresses_function_signatures
-            .contains_key(&call.to) {
-                return false
-            }
-        // If the call is to a contract with no specified functions, keep the call        
+            .contains_key(&call.to)
+        {
+            return false;
+        }
+        // If the call is to a contract with no specified functions, keep the call
         if self
             .contract_addresses_function_signatures
             .get(&call.to)
             .unwrap()
-            .is_empty() {
-                // Allow the ability to match on calls to a contract generally
-                // If you want to match on a generic call to contract this limits you
-                // from matching with a specific call to a contract
-                return true
-            }
+            .is_empty()
+        {
+            // Allow the ability to match on calls to a contract generally
+            // If you want to match on a generic call to contract this limits you
+            // from matching with a specific call to a contract
+            return true;
+        }
         // Ensure the call is to run a function the filter expressed an interest in
-        self
-            .contract_addresses_function_signatures
+        self.contract_addresses_function_signatures
             .get(&call.to)
             .unwrap()
             .contains(&call.input.0[..4])
@@ -188,7 +189,9 @@ impl FromIterator<(Address, [u8; 4])> for EthereumCallFilter {
                 set
             });
         });
-        EthereumCallFilter { contract_addresses_function_signatures: lookup }
+        EthereumCallFilter {
+            contract_addresses_function_signatures: lookup,
+        }
     }
 }
 
@@ -198,9 +201,8 @@ impl From<EthereumBlockFilter> for EthereumCallFilter {
             contract_addresses_function_signatures: ethereum_block_filter
                 .contract_addresses
                 .into_iter()
-                .map(|address| {
-                    (address, HashSet::default())
-                }).collect::<HashMap<Address, HashSet<[u8; 4]>>>(),
+                .map(|address| (address, HashSet::default()))
+                .collect::<HashMap<Address, HashSet<[u8; 4]>>>(),
         }
     }
 }
@@ -216,7 +218,7 @@ impl FromIterator<Address> for EthereumBlockFilter {
     where
         I: IntoIterator<Item = Address>,
     {
-        EthereumBlockFilter{
+        EthereumBlockFilter {
             contract_addresses: iter.into_iter().collect(),
             trigger_every_block: false,
         }
@@ -344,12 +346,11 @@ pub trait EthereumAdapter: Send + Sync + 'static {
         from: u64,
         to: u64,
     ) -> Box<Future<Item = Vec<EthereumBlockPointer>, Error = Error> + Send>;
-    
+
     /// Call the function of a smart contract.
     fn contract_call(
         &self,
         logger: &Logger,
         call: EthereumContractCall,
     ) -> Box<Future<Item = Vec<Token>, Error = EthereumContractCallError> + Send>;
-
 }
