@@ -291,6 +291,14 @@ pub enum SubgraphAssignmentProviderEvent {
 }
 
 #[derive(Fail, Debug)]
+pub enum SubgraphManifestValidationError {
+    #[fail(display = "subgraph source address is required")]
+    SourceAddressRequired,
+    #[fail(display = "subgraph data source has too many similar block handlers")]
+    DataSourceBlockHandlerLimitExceeded,
+}
+
+#[derive(Fail, Debug)]
 pub enum SubgraphManifestResolveError {
     #[fail(display = "parse error: {}", _0)]
     ParseError(serde_yaml::Error),
@@ -406,6 +414,15 @@ impl UnresolvedMappingABI {
 #[derive(Clone, Debug, Hash, Eq, PartialEq, Deserialize)]
 pub struct MappingBlockHandler {
     pub handler: String,
+    pub filter: Option<BlockHandlerFilter>,
+}
+
+#[derive(Clone, Debug, Hash, Eq, PartialEq, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum BlockHandlerFilter {
+    // Call filter will trigger on all blocks where the data source contract
+    // address has been called
+    Call,
 }
 
 #[derive(Clone, Debug, Hash, Eq, PartialEq, Deserialize)]
@@ -437,7 +454,7 @@ pub struct UnresolvedMapping {
     pub language: String,
     pub entities: Vec<String>,
     pub abis: Vec<UnresolvedMappingABI>,
-    pub block_handler: Option<MappingBlockHandler>,
+    pub block_handlers: Option<Vec<MappingBlockHandler>>,
     pub call_handlers: Option<Vec<MappingCallHandler>>,
     pub event_handlers: Option<Vec<MappingEventHandler>>,
     pub file: Link,
@@ -450,7 +467,7 @@ pub struct Mapping {
     pub language: String,
     pub entities: Vec<String>,
     pub abis: Vec<MappingABI>,
-    pub block_handler: Option<MappingBlockHandler>,
+    pub block_handlers: Vec<MappingBlockHandler>,
     pub call_handlers: Vec<MappingCallHandler>,
     pub event_handlers: Vec<MappingEventHandler>,
     pub runtime: Arc<Module>,
@@ -468,7 +485,7 @@ impl UnresolvedMapping {
             language,
             entities,
             abis,
-            block_handler,
+            block_handlers,
             call_handlers,
             event_handlers,
             file: link,
@@ -491,7 +508,7 @@ impl UnresolvedMapping {
             language,
             entities,
             abis,
-            block_handler,
+            block_handlers: block_handlers.unwrap_or(Vec::new()),
             call_handlers: call_handlers.unwrap_or(Vec::new()),
             event_handlers: event_handlers.unwrap_or(Vec::new()),
             runtime,
