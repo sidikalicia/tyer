@@ -27,31 +27,8 @@ pub fn validate_manifest(manifest: SubgraphManifest) -> Result<SubgraphManifest,
         ))
     }
 
-    // Validate that each block handler filter has an accepted type
-    let has_invalid_block_filter = manifest
-        .data_sources
-        .iter()
-        .any(|data_source| {
-            if data_source.mapping.block_handlers.is_empty() {
-                return false
-            }
-            data_source
-                .mapping
-                .block_handlers
-                .iter()
-                .any(|block_handler| {
-                    if block_handler.filter.is_none() {
-                        return false
-                    }
-                    !block_handler.filter.clone().unwrap().is_kind_call()
-                })
-        });
-    if has_invalid_block_filter {
-        return Err(SubgraphRegistrarError::ManifestValidationError(
-            SubgraphManifestValidationError::InvalidBlockHandlerFilter
-        ))
-    }
-
+    // Validate that there are no more than one of each type of
+    // block_handler in each data source.
     let has_too_many_block_handlers = manifest
         .data_sources
         .iter()

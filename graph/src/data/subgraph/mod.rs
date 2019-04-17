@@ -288,8 +288,6 @@ pub enum SubgraphAssignmentProviderEvent {
 pub enum SubgraphManifestValidationError {
     #[fail(display = "subgraph source address is required")]
     SourceAddressRequired,
-    #[fail(display = "subgraph data source has an invalid block handler filter")]
-    InvalidBlockHandlerFilter,
     #[fail(display = "subgraph data source has too many similar block handlers")]
     DataSourceBlockHandlerLimitExceeded,
 }
@@ -379,14 +377,11 @@ pub struct MappingBlockHandler {
 }
 
 #[derive(Clone, Debug, Hash, Eq, PartialEq, Deserialize)]
-pub struct BlockHandlerFilter {
-    pub kind: String,
-}
-
-impl BlockHandlerFilter {
-    pub fn is_kind_call(self) -> bool {
-        self.kind == "call"
-    }
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum BlockHandlerFilter {
+    // Call filter will trigger on all blocks where the data source contract
+    // address has been called
+    Call,
 }
 
 #[derive(Clone, Debug, Hash, Eq, PartialEq, Deserialize)]

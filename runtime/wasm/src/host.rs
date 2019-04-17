@@ -398,7 +398,7 @@ impl RuntimeHost {
                     .data_source_block_handlers
                     .iter()
                     .find(move |handler| {
-                        handler.filter.is_some() && handler.filter.clone().unwrap().is_kind_call()
+                        handler.filter.is_some() && handler.filter.clone().unwrap() == BlockHandlerFilter::Call
                     })
                     .cloned()
                     .ok_or_else(|| {
