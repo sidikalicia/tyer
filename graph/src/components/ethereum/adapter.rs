@@ -208,7 +208,7 @@ impl From<EthereumBlockFilter> for EthereumCallFilter {
 #[derive(Clone, Debug)]
 pub struct EthereumBlockFilter {
     pub contract_addresses: HashSet<Address>,
-    pub trigger_each_block: bool,
+    pub trigger_every_block: bool,
 }
 
 impl FromIterator<Address> for EthereumBlockFilter {
@@ -218,7 +218,7 @@ impl FromIterator<Address> for EthereumBlockFilter {
     {
         EthereumBlockFilter{
             contract_addresses: iter.into_iter().collect(),
-            trigger_each_block: false,
+            trigger_every_block: false,
         }
     }
 }

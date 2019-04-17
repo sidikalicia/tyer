@@ -724,7 +724,7 @@ where
         // entire operation fails.
         let eth = self.clone();
         let mut block_futs: Vec<Box<Future<Item = Vec<EthereumBlockPointer>, Error = Error> + Send>> = vec![];
-        if block_filter_opt.is_some() && block_filter_opt.clone().unwrap().trigger_each_block {
+        if block_filter_opt.is_some() && block_filter_opt.clone().unwrap().trigger_every_block {
             // All blocks in the range contain a trigger
             block_futs.push(eth.blocks(&logger, from, to));
         } else {

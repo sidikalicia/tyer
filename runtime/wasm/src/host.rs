@@ -388,7 +388,7 @@ impl RuntimeHost {
                     .cloned()
                     .ok_or_else(|| {
                         format_err!(
-                            "No block hander for `Every` block trigger type found in data source \"{}\"",
+                            "No block handler for `Every` block trigger type found in data source \"{}\"",
                             self.data_source_name,
                         )
                     })
