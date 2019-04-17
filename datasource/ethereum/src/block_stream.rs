@@ -102,8 +102,10 @@ struct BlockStreamContext<S, C, E> {
     node_id: NodeId,
     subgraph_id: SubgraphDeploymentId,
     reorg_threshold: u64,
+    log_filter: Option<EthereumLogFilter>,
+    call_filter: Option<EthereumCallFilter>,
+    block_filter: Option<EthereumBlockFilter>,
     logger: Logger,
-    include_calls_in_blocks: bool,
 }
 
 impl<S, C, E> Clone for BlockStreamContext<S, C, E> {
@@ -115,8 +117,10 @@ impl<S, C, E> Clone for BlockStreamContext<S, C, E> {
             node_id: self.node_id.clone(),
             subgraph_id: self.subgraph_id.clone(),
             reorg_threshold: self.reorg_threshold,
+            log_filter: self.log_filter.clone(),
+            call_filter: self.call_filter.clone(),
+            block_filter: self.block_filter.clone(),
             logger: self.logger.clone(),
-            include_calls_in_blocks: self.include_calls_in_blocks,
         }
     }
 }
@@ -124,9 +128,6 @@ impl<S, C, E> Clone for BlockStreamContext<S, C, E> {
 pub struct BlockStream<S, C, E> {
     state: Mutex<BlockStreamState>,
     consecutive_err_count: u32,
-    log_filter: Option<EthereumLogFilter>,
-    call_filter: Option<EthereumCallFilter>,
-    block_filter: Option<EthereumBlockFilter>,
     chain_head_update_sink: Sender<ChainHeadUpdate>,
     chain_head_update_stream: Receiver<ChainHeadUpdate>,
     _chain_head_update_guard: CancelGuard,
@@ -154,20 +155,9 @@ where
     ) -> Self {
         let (chain_head_update_sink, chain_head_update_stream) = channel(100);
 
-        let mut include_calls_in_blocks = call_filter.as_ref().map_or(false, |_call_filter| true);
-        if block_filter
-            .as_ref()
-            .map_or(false, |filter| filter.contract_addresses.len() > 0)
-        {
-            include_calls_in_blocks = true
-        }
-
         BlockStream {
             state: Mutex::new(BlockStreamState::New),
             consecutive_err_count: 0,
-            log_filter,
-            call_filter,
-            block_filter,
             chain_head_update_sink,
             chain_head_update_stream,
             _chain_head_update_guard: chain_head_update_guard,
@@ -179,7 +169,9 @@ where
                 subgraph_id,
                 reorg_threshold,
                 logger,
-                include_calls_in_blocks,
+                log_filter,
+                call_filter,
+                block_filter,
             },
         }
     }
@@ -191,12 +183,20 @@ where
     C: ChainStore,
     E: EthereumAdapter,
 {
+    /// Analyze the trigger filters to determine if we need to query the blocks calls
+    /// and populate them in the blocks
+    fn include_calls_in_blocks(&self) -> bool {
+        let call_filter_requirement = self.call_filter.as_ref().map_or(false, |_call_filter| true);
+        let block_filter_requirement = self
+            .block_filter
+            .as_ref()
+            .map_or(false, |filter| filter.contract_addresses.len() > 0);
+        call_filter_requirement || block_filter_requirement
+    }
+
     /// Perform reconciliation steps until there are blocks to yield or we are up-to-date.
     fn next_blocks(
         &self,
-        log_filter: Option<EthereumLogFilter>,
-        call_filter: Option<EthereumCallFilter>,
-        block_filter: Option<EthereumBlockFilter>,
     ) -> Box<
         Future<
                 Item = Option<Box<Stream<Item = EthereumBlockWithTriggers, Error = Error> + Send>>,
@@ -209,14 +209,11 @@ where
             let ctx1 = ctx.clone();
             let ctx2 = ctx.clone();
             let ctx3 = ctx.clone();
-            let log_filter = log_filter.clone();
-            let call_filter = call_filter.clone();
-            let block_filter = block_filter.clone();
 
             // Update progress metrics
             future::result(ctx1.update_subgraph_block_count())
                 // Determine the next step.
-                .and_then(move |()| ctx1.get_next_step(log_filter, call_filter, block_filter))
+                .and_then(move |()| ctx1.get_next_step())
                 // Do the next step.
                 .and_then(move |step| ctx2.do_step(step))
                 // Check outcome.
@@ -237,13 +234,11 @@ where
     }
 
     /// Determine the next reconciliation step. Does not modify Store or ChainStore.
-    fn get_next_step(
-        &self,
-        log_filter: Option<EthereumLogFilter>,
-        call_filter: Option<EthereumCallFilter>,
-        block_filter: Option<EthereumBlockFilter>,
-    ) -> impl Future<Item = ReconciliationStep, Error = Error> + Send {
+    fn get_next_step(&self) -> impl Future<Item = ReconciliationStep, Error = Error> + Send {
         let ctx = self.clone();
+        let log_filter = self.log_filter.clone();
+        let call_filter = self.call_filter.clone();
+        let block_filter = self.block_filter.clone();
         let reorg_threshold = ctx.reorg_threshold;
 
         debug!(ctx.logger, "Identify next step");
@@ -451,7 +446,7 @@ where
             // Walk back to one block short of subgraph_ptr.number
             let offset = head_ptr.number - subgraph_ptr.number - 1;
             let head_ancestor_opt = ctx.chain_store.ancestor_block(head_ptr, offset).unwrap();
-            let include_calls_in_blocks = self.include_calls_in_blocks;
+            let include_calls_in_blocks = self.include_calls_in_blocks();
             let logger = self.logger.clone();
             match head_ancestor_opt {
                 None => {
@@ -821,7 +816,7 @@ where
             .map(|chunk| chunk.to_vec())
             .collect::<Vec<_>>();
 
-        let include_calls_in_blocks = self.include_calls_in_blocks;
+        let include_calls_in_blocks = self.include_calls_in_blocks();
         // Return a stream that lazily loads batches of blocks
         stream::iter_ok::<_, Error>(block_hashes_batches)
             .map(move |block_hashes_batch| {
@@ -941,11 +936,7 @@ where
                 // First time being polled
                 BlockStreamState::New => {
                     // Start the reconciliation process by asking for blocks
-                    let next_blocks_future = self.ctx.next_blocks(
-                        self.log_filter.clone(),
-                        self.call_filter.clone(),
-                        self.block_filter.clone(),
-                    );
+                    let next_blocks_future = self.ctx.next_blocks();
                     state = BlockStreamState::Reconciliation(next_blocks_future);
 
                     // Poll the next_blocks() future
@@ -996,11 +987,7 @@ where
                             );
 
                             // Try again by restarting reconciliation
-                            let next_blocks_future = self.ctx.next_blocks(
-                                self.log_filter.clone(),
-                                self.call_filter.clone(),
-                                self.block_filter.clone(),
-                            );
+                            let next_blocks_future = self.ctx.next_blocks();
                             state = BlockStreamState::Reconciliation(next_blocks_future);
 
                             // Poll the next_blocks() future
@@ -1024,11 +1011,7 @@ where
                             self.consecutive_err_count = 0;
 
                             // Restart reconciliation until more blocks or done
-                            let next_blocks_future = self.ctx.next_blocks(
-                                self.log_filter.clone(),
-                                self.call_filter.clone(),
-                                self.block_filter.clone(),
-                            );
+                            let next_blocks_future = self.ctx.next_blocks();
                             state = BlockStreamState::Reconciliation(next_blocks_future);
 
                             // Poll the next_blocks() future
@@ -1055,11 +1038,7 @@ where
                             );
 
                             // Try again by restarting reconciliation
-                            let next_blocks_future = self.ctx.next_blocks(
-                                self.log_filter.clone(),
-                                self.call_filter.clone(),
-                                self.block_filter.clone(),
-                            );
+                            let next_blocks_future = self.ctx.next_blocks();
                             state = BlockStreamState::Reconciliation(next_blocks_future);
 
                             // Poll the next_blocks() future
@@ -1074,11 +1053,7 @@ where
                         // Chain head was updated
                         Ok(Async::Ready(Some(_chain_head_update))) => {
                             // Start reconciliation process
-                            let next_blocks_future = self.ctx.next_blocks(
-                                self.log_filter.clone(),
-                                self.call_filter.clone(),
-                                self.block_filter.clone(),
-                            );
+                            let next_blocks_future = self.ctx.next_blocks();
                             state = BlockStreamState::Reconciliation(next_blocks_future);
 
                             // Poll the next_blocks() future
