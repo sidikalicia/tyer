@@ -3,8 +3,8 @@ use graph::prelude::*;
 pub fn validate_manifest(
     manifest: SubgraphManifest,
 ) -> Result<SubgraphManifest, SubgraphRegistrarError> {
-    let mut validation_errs: Vec<SubgraphManifestValidationError> =  Vec::new();
-    
+    let mut validation_errs: Vec<SubgraphManifestValidationError> = Vec::new();
+
     // Validate that the manifest has a `source` address in each data source
     // which has call or block handlers
     let has_invalid_data_source = manifest.data_sources.iter().any(|data_source| {
@@ -32,8 +32,9 @@ pub fn validate_manifest(
             .for_each(|block_handler| {
                 if block_handler.filter.is_none() {
                     non_filtered_block_handler_count += 1
+                } else {
+                    call_filtered_block_handler_count += 1
                 }
-                call_filtered_block_handler_count += 1
             });
         return non_filtered_block_handler_count > 1 || call_filtered_block_handler_count > 1;
     });
@@ -42,7 +43,9 @@ pub fn validate_manifest(
     }
 
     if validation_errs.is_empty() {
-        return Ok(manifest)
+        return Ok(manifest);
     }
-    return Err(SubgraphRegistrarError::ManifestValidationError(validation_errs))
+    return Err(SubgraphRegistrarError::ManifestValidationError(
+        validation_errs,
+    ));
 }
