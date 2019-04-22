@@ -161,7 +161,9 @@ impl<'a> FromIterator<&'a DataSource> for EthereumLogFilter {
                 data_source
                     .mapping
                     .event_handlers
-                    .iter()
+                    .clone()
+                    .unwrap_or(vec![])
+                    .into_iter()
                     .map(move |event_handler| {
                         let event_sig = string_to_h256(&event_handler.event);
                         (contract_addr, event_sig)
@@ -217,7 +219,9 @@ impl<'a> FromIterator<&'a DataSource> for EthereumCallFilter {
                 data_source
                     .mapping
                     .call_handlers
-                    .iter()
+                    .clone()
+                    .unwrap_or(vec![])
+                    .into_iter()
                     .map(move |call_handler| {
                         let sig = keccak256(call_handler.function.as_bytes());
                         (contract_addr, [sig[0], sig[1], sig[2], sig[3]])
@@ -279,7 +283,9 @@ impl<'a> FromIterator<&'a DataSource> for EthereumBlockFilter {
                 let has_block_handler_with_call_filter = data_source
                     .mapping
                     .block_handlers
-                    .iter()
+                    .clone()
+                    .unwrap_or(vec![])
+                    .into_iter()
                     .any(|block_handler| match block_handler.filter {
                         Some(ref filter) if *filter == BlockHandlerFilter::Call => return true,
                         _ => return false,
@@ -287,7 +293,9 @@ impl<'a> FromIterator<&'a DataSource> for EthereumBlockFilter {
                 let has_block_handler_without_filter = data_source
                     .mapping
                     .block_handlers
-                    .iter()
+                    .clone()
+                    .unwrap_or(vec![])
+                    .into_iter()
                     .any(|block_handler| block_handler.filter.is_none());
 
                 trigger_every_block = has_address && has_block_handler_without_filter;
