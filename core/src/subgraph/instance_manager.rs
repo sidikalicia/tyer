@@ -415,16 +415,13 @@ where
         "block_hash" => format!("{:?}", block.block.hash.unwrap())
     ));
 
-
-    if triggers.len() == 0 {
-        debug!(logger, "No triggers found in this block for this subgraph");
-    } else if triggers.len() == 1 {
+    if triggers.len() == 1 {
         info!(logger, "1 trigger found in this block for this subgraph");
-    } else {
+    } else if triggers.len() > 1 {
         info!(
             logger,
             "{} triggers found in this block for this subgraph",
-            logs.len()
+            triggers.len()
         );
     }
 
