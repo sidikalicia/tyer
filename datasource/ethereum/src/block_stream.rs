@@ -1,6 +1,5 @@
 use futures::prelude::*;
 use futures::sync::mpsc::{channel, Receiver, Sender};
-use tiny_keccak::keccak256;
 
 use std;
 use std::cmp;
@@ -9,8 +8,6 @@ use std::collections::{HashMap, HashSet};
 use std::env;
 use std::mem;
 use std::sync::Mutex;
-
-use graph::util::ethereum::string_to_h256;
 
 use graph::data::subgraph::schema::{
     SubgraphDeploymentEntity, SubgraphEntity, SubgraphVersionEntity,
