@@ -506,7 +506,7 @@ where
             );
         }
 
-        process_logs_in_runtime_hosts::<T>(
+        process_triggers_in_runtime_hosts::<T>(
             logger2.clone(),
             runtime_hosts.clone(),
             block_state,
@@ -591,7 +591,7 @@ where
         })
 }
 
-fn process_logs_in_runtime_hosts<T>(
+fn process_triggers_in_runtime_hosts<T>(
     logger: Logger,
     runtime_hosts: Vec<Arc<T::Host>>,
     block_state: BlockState,
