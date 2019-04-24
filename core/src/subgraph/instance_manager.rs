@@ -1,6 +1,7 @@
 use futures::future::{loop_fn, Loop};
 use futures::sync::mpsc::{channel, Receiver, Sender};
 use std::collections::HashMap;
+use std::ops::Deref;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::RwLock;
 use std::time::Duration;
@@ -11,7 +12,6 @@ use graph::data::subgraph::schema::{
 };
 use graph::prelude::{SubgraphInstance as SubgraphInstanceTrait, *};
 use graph::util::extend::Extend;
-use graph::web3::types::Log;
 
 use super::SubgraphInstance;
 use crate::elastic_logger;
@@ -422,8 +422,10 @@ where
     S: ChainStore + Store,
     T: RuntimeHostBuilder,
 {
+    let calls = block.calls;
     let triggers = block.triggers;
     let block = block.ethereum_block;
+
     let logger = logger.new(o!(
         "block_number" => format!("{:?}", block.block.number.unwrap()),
         "block_hash" => format!("{:?}", block.block.hash.unwrap())
@@ -465,44 +467,34 @@ where
         create_dynamic_data_sources(logger1, ctx, block_state).from_err()
     })
     .and_then(move |(ctx, block_state, data_sources, runtime_hosts)| {
-        // Reprocess the logs that only match the new data sources
-        //
-        // Note: Once we support other triggers as well, we may have to
-        // re-request the current block from the block stream's adapter
-        // and process that instead of the block we already have here.
+        // Reprocess the triggers from this block that match the new data sources
 
-        // Extract logs relevant to the new runtime hosts
-        let logs: Vec<_> = if runtime_hosts.is_empty() {
-            vec![]
-        } else {
-            block
-                .transaction_receipts
-                .iter()
-                .flat_map(|receipt| {
-                    receipt
-                        .logs
-                        .iter()
-                        .filter(|log| runtime_hosts.iter().any(|host| host.matches_log(&log)))
-                })
-                .cloned()
-                .collect()
+        let block_with_calls = EthereumBlockWithCalls {
+            ethereum_block: block.deref().clone(),
+            calls,
         };
 
-        if logs.len() == 0 {
-            debug!(
-                logger,
-                "No events found in this block for the new data sources"
-            );
-        } else if logs.len() == 1 {
+        let triggers = match <B>::Stream::parse_triggers(
+            EthereumLogFilter::from_data_sources_opt(&data_sources),
+            EthereumCallFilter::from_data_sources_opt(&data_sources),
+            EthereumBlockFilter::from_data_sources_opt(&data_sources),
+            false,
+            block_with_calls,
+        ) {
+            Ok(block) => block.triggers,
+            Err(_e) => panic!("foo"), // return future::err(e.into()),
+        };
+
+        if triggers.len() == 1 {
             info!(
                 logger,
-                "1 event found in this block for the new data sources"
+                "1 trigger found in this block for the new data sources"
             );
-        } else {
+        } else if triggers.len() > 1 {
             info!(
                 logger,
-                "{} events found in this block for the new data sources",
-                logs.len()
+                "{} triggers found in this block for the new data sources",
+                triggers.len()
             );
         }
 
@@ -511,7 +503,7 @@ where
             runtime_hosts.clone(),
             block_state,
             block.clone(),
-            logs,
+            triggers,
         )
         .map(move |block_state| (ctx, block_state, data_sources, runtime_hosts))
     })
@@ -587,7 +579,7 @@ where
                 .instance
                 .process_trigger(&logger, block, trigger, block_state)
                 .map(|block_state| (ctx, block_state))
-                .map_err(|e| format_err!("Failed to process event: {}", e))
+                .map_err(|e| format_err!("Failed to process trigger: {}", e))
         })
 }
 
@@ -596,19 +588,17 @@ fn process_triggers_in_runtime_hosts<T>(
     runtime_hosts: Vec<Arc<T::Host>>,
     block_state: BlockState,
     block: Arc<EthereumBlock>,
-    logs: Vec<Log>,
+    triggers: Vec<EthereumTrigger>,
 ) -> impl Future<Item = BlockState, Error = CancelableError<Error>>
 where
     T: RuntimeHostBuilder,
 {
-    stream::iter_ok::<_, CancelableError<Error>>(logs)
+    stream::iter_ok::<_, CancelableError<Error>>(triggers)
         // Process events from the block stream
-        .fold(block_state, move |block_state, log| {
+        .fold(block_state, move |block_state, trigger| {
             let logger = logger.clone();
             let block = block.clone();
             let runtime_hosts = runtime_hosts.clone();
-
-            let trigger = EthereumTrigger::Log(log);
 
             // Process the log in each host in the same order the corresponding
             // data sources have been created
