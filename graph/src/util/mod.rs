@@ -6,3 +6,6 @@ pub mod log;
 
 /// Utils for working with ethereum data types
 pub mod ethereum;
+
+/// Extensible valules.
+pub mod extend;
