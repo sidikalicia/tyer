@@ -580,6 +580,14 @@ impl RuntimeHostTrait for RuntimeHost {
             Err(e) => return Box::new(future::err(e)),
         };
 
+        debug!(
+            logger, "Start processing Ethereum call";
+            "function" => &call_handler.function,
+            "handler" => &call_handler.handler,
+            "data_source" => &self.data_source_name,
+            "to" => format!("{}", &call.to),
+        );
+
         // Execute the call handler and asynchronously wait for the result
         let (result_sender, result_receiver) = oneshot::channel();
         let start_time = Instant::now();
@@ -608,6 +616,8 @@ impl RuntimeHostTrait for RuntimeHost {
                 .and_then(move |result| {
                     info!(
                         logger, "Done processing Ethereum call";
+                        "function" => &call_handler.function,
+                        "handler" => &call_handler.handler,
                         // Replace this when `as_millis` is stable.
                         "secs" => start_time.elapsed().as_secs(),
                         "ms" => start_time.elapsed().subsec_millis()
@@ -628,6 +638,14 @@ impl RuntimeHostTrait for RuntimeHost {
             Ok(handler) => handler,
             Err(e) => return Box::new(future::err(e)),
         };
+
+        debug!(
+            logger, "Start processing Ethereum block";
+            "hash" => block.block.hash.unwrap().to_string(),
+            "number" => &block.block.number.unwrap().to_string(),
+            "handler" => &block_handler.handler,
+            "data_source" => &self.data_source_name,
+        );
 
         // Execute the call handler and asynchronously wait for the result
         let (result_sender, result_receiver) = oneshot::channel();
@@ -655,6 +673,9 @@ impl RuntimeHostTrait for RuntimeHost {
                 .and_then(move |result| {
                     info!(
                         logger, "Done processing Ethereum block";
+                        "hash" => block.block.hash.unwrap().to_string(),
+                        "number" => &block.block.number.unwrap().to_string(),
+                        "handler" => &block_handler.handler,
                         // Replace this when `as_millis` is stable.
                         "secs" => start_time.elapsed().as_secs(),
                         "ms" => start_time.elapsed().subsec_millis()
