@@ -1044,15 +1044,18 @@ impl ChainStore for Store {
             bail!("block offset points to before genesis block");
         }
 
-        select(lookup_ancestor_block(block_ptr.hash_hex(), offset as i64))
-            .first::<Option<serde_json::Value>>(&*self.conn.get()?)
-            .map(|val_opt| {
-                val_opt.map(|val| {
-                    serde_json::from_value::<EthereumBlock>(val)
-                        .expect("Failed to deserialize block from database")
-                })
+        select(lookup_ancestor_block(
+            dbg!(block_ptr.hash_hex()),
+            dbg!(offset as i64),
+        ))
+        .first::<Option<serde_json::Value>>(&*self.conn.get()?)
+        .map(|val_opt| {
+            dbg!(val_opt).map(|val| {
+                serde_json::from_value::<EthereumBlock>(val)
+                    .expect("Failed to deserialize block from database")
             })
-            .map_err(Error::from)
+        })
+        .map_err(Error::from)
     }
 }
 

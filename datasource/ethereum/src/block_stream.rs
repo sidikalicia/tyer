@@ -267,12 +267,12 @@ where
 
         let head_ptr = head_ptr_opt.unwrap();
 
-        trace!(
+        debug!(
             ctx.logger, "Chain head pointer";
             "hash" => format!("{:?}", head_ptr.hash),
             "number" => &head_ptr.number
         );
-        trace!(
+        debug!(
             ctx.logger, "Subgraph pointer";
             "hash" => format!("{:?}", subgraph_ptr.hash),
             "number" => &subgraph_ptr.number
