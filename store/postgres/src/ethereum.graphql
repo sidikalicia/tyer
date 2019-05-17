@@ -1,18 +1,29 @@
 interface Address {
   address: Bytes!
   balance: BigInt!
+
+  transactionsFrom: [Transaction!]! @derivedFrom(field: "from")
+  transactionsTo: [Transaction!]! @derivedFrom(field: "to")
 }
 
 type Account @entity implements Address {
   id: ID!
   address: Bytes!
   balance: BigInt!
+
+  transactionsFrom: [Transaction!]! @derivedFrom(field: "from")
+  transactionsTo: [Transaction!]! @derivedFrom(field: "to")
 }
 
 type Contract @entity implements Address {
   id: ID!
   address: Bytes!
   balance: BigInt!
+
+  transactionsFrom: [Transaction!]! @derivedFrom(field: "from")
+  transactionsTo: [Transaction!]! @derivedFrom(field: "to")
+
+  logs: [Log!]! @derivedFrom(field: "contract")
 }
 
 type Block @entity {
