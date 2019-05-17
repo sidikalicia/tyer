@@ -1,0 +1,89 @@
+interface Address {
+  address: Bytes!
+  balance: BigInt!
+}
+
+type Account @entity implements Address {
+  id: ID!
+  address: Bytes!
+  balance: BigInt!
+}
+
+type Contract @entity implements Address {
+  id: ID!
+  address: Bytes!
+  balance: BigInt!
+}
+
+type Block @entity {
+  id: ID!
+
+  hash: Bytes
+  number: BigInt
+  timestamp: BigInt!
+  author: Account!
+  nonce: Bytes
+
+  parent: Block
+  unclesHash: Bytes!
+  uncles: [Block!]! @derivedFrom(field: "TODO")
+
+  stateRoot: Bytes!
+  transactionsRoot: Bytes!
+  receiptsRoot: Bytes!
+
+  transactions: [Transaction!]! @derivedFrom(field: "block")
+
+  gasUsed: BigInt!
+  gasLimit: BigInt!
+  extraData: Bytes!
+  difficulty: BigInt!
+  totalDifficulty: BigInt!
+  sealFields: [Bytes!]!
+  size: BigInt
+  mixHash: Bytes
+}
+
+type Transaction @entity {
+  id: ID!
+
+  hash: Bytes!
+  block: Block
+  transactionIndex: BigInt
+  nonce: BigInt!
+
+  from: Address!
+  to: Address
+  value: BigInt!
+  input: Bytes!
+
+  receipt: TransactionReceipt @derivedFrom(field: "transaction")
+  gasPrice:  BigInt!
+  gas: BigInt!
+}
+
+type TransactionReceipt @entity {
+  id: ID!
+
+  transaction: Transaction!
+  contract: Contract
+  logsBloom: Bytes!
+  logs: [Log!]!
+  
+  cumulativeGasUsed: BigInt!
+  gasUsed: BigInt!
+  status: Int # TODO: Consider using an enum for this?
+}
+
+type Log @entity {
+  id: ID!
+  block: Block
+  transaction: Transaction
+  logIndex: BigInt
+  transactionLogIndex: BigInt
+  contract: Contract!
+  topics: [Bytes]!
+  data: Bytes!
+  logType: String
+  removed: Bool
+}
