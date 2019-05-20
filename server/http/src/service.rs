@@ -71,7 +71,8 @@ where
         let entity_query = SubgraphEntity::query().range(EntityRange::first(2));
 
         Box::new(
-            future::result(self.store.find(entity_query))
+            self.store
+                .find(entity_query)
                 .map_err(|e| GraphQLServerError::InternalError(e.to_string()))
                 .and_then(move |mut subgraph_entities| -> GraphQLServiceResponse {
                     // If there is only one subgraph, redirect to it
@@ -132,7 +133,7 @@ where
     }
 
     fn handle_graphql_query_by_name(
-        &self,
+        self,
         subgraph_name: String,
         request: Request<Body>,
     ) -> GraphQLServiceResponse {
@@ -146,7 +147,8 @@ where
                         subgraph_name
                     ))
                 })
-                .and_then(|subgraph_name| {
+                .into_future()
+                .and_then(move |subgraph_name| {
                     self.store
                         .resolve_subgraph_name_to_id(subgraph_name)
                         .map_err(|e| {
@@ -156,14 +158,13 @@ where
                             ))
                         })
                 })
-                .into_future()
                 .and_then(|subgraph_id_opt| {
                     subgraph_id_opt.ok_or(GraphQLServerError::ClientError(
                         "Subgraph name not found".to_owned(),
                     ))
                 })
                 .and_then(move |subgraph_id| {
-                    service.handle_graphql_query(&subgraph_id, request.into_body())
+                    service.handle_graphql_query(subgraph_id, request.into_body())
                 }),
         )
     }
@@ -175,76 +176,72 @@ where
     ) -> GraphQLServiceResponse {
         match SubgraphDeploymentId::new(id) {
             Err(()) => self.handle_not_found(),
-            Ok(id) => self.handle_graphql_query(&id, request.into_body()),
+            Ok(id) => self.clone().handle_graphql_query(id, request.into_body()),
         }
     }
 
     fn handle_graphql_query(
-        &self,
-        id: &SubgraphDeploymentId,
+        self,
+        id: SubgraphDeploymentId,
         request_body: Body,
     ) -> GraphQLServiceResponse {
         let service = self.clone();
         let logger = self.logger.clone();
         let sd_id = id.clone();
-
-        match self.store.is_deployed(id) {
-            Err(e) => {
-                return Box::new(future::err(GraphQLServerError::InternalError(
-                    e.to_string(),
-                )));
-            }
-            Ok(false) => {
-                return Box::new(future::err(GraphQLServerError::ClientError(format!(
-                    "No data found for subgraph {}",
-                    id
-                ))));
-            }
-            Ok(true) => (),
-        }
-
-        let schema = match self.store.subgraph_schema(id) {
-            Ok(schema) => schema,
-            Err(e) => {
-                return Box::new(future::err(GraphQLServerError::InternalError(
-                    e.to_string(),
-                )));
-            }
-        };
-
         let start = Instant::now();
         Box::new(
-            request_body
-                .concat2()
-                .map_err(|_| GraphQLServerError::from("Failed to read request body"))
-                .and_then(move |body| GraphQLRequest::new(body, schema))
-                .and_then(move |query| {
-                    // Run the query using the query runner
-                    service
-                        .graphql_runner
-                        .run_query(query)
-                        .map_err(|e| GraphQLServerError::from(e))
-                })
-                .then(move |result| {
-                    let elapsed = start.elapsed().as_millis();
-                    match result {
-                        Ok(_) => info!(
-                            logger,
-                            "GraphQL query served";
-                            "subgraph_deployment" => sd_id.deref(),
-                            "query_time_ms" => elapsed,
-                            "code" => LogCode::GraphQlQuerySuccess,
-                        ),
-                        Err(ref e) => error!(
-                            logger,
-                            "GraphQL query failed";
-                            "subgraph_deployment" => sd_id.deref(),
-                            "error" => e.to_string(),
-                            "query_time_ms" => elapsed,
-                            "code" => LogCode::GraphQlQueryFailure,
-                        ),
+            self.store
+                .is_deployed(&id)
+                .map_err(|e| e.to_string())
+                .from_err()
+                .and_then(move |is_deployed| {
+                    if !is_deployed {
+                        return Err(GraphQLServerError::ClientError(format!(
+                            "No deployments found for subgraph {}",
+                            id
+                        )));
+                    } else {
+                        Ok(id)
                     }
-                    GraphQLResponse::new(result)
+                })
+                .and_then(move |id| {
+                    self.store
+                        .subgraph_schema(&id)
+                        .map_err(|e| GraphQLServerError::InternalError(e.to_string()))
+                })
+                .and_then(move |schema| {
+                    request_body
+                        .concat2()
+                        .map_err(|_| GraphQLServerError::from("Failed to read request body"))
+                        .and_then(move |body| GraphQLRequest::new(body, schema))
+                        .and_then(move |query| {
+                            // Run the query using the query runner
+                            service
+                                .graphql_runner
+                                .run_query(query)
+                                .map_err(|e| GraphQLServerError::from(e))
+                        })
+                        .then(move |result| {
+                            let elapsed = start.elapsed().as_millis();
+                            match result {
+                                Ok(_) => info!(
+                                    logger,
+                                    "GraphQL query served";
+                                    "subgraph_deployment" => sd_id.deref(),
+                                    "query_time_ms" => elapsed,
+                                    "code" => LogCode::GraphQlQuerySuccess,
+                                ),
+                                Err(ref e) => error!(
+                                    logger,
+                                    "GraphQL query failed";
+                                    "subgraph_deployment" => sd_id.deref(),
+                                    "error" => e.to_string(),
+                                    "query_time_ms" => elapsed,
+                                    "code" => LogCode::GraphQlQueryFailure,
+                                ),
+                            }
+                            GraphQLResponse::new(result)
+                        })
                 }),
         )
     }
@@ -287,7 +284,7 @@ where
         ))
     }
 
-    fn handle_call(&mut self, req: Request<Body>) -> GraphQLServiceResponse {
+    fn handle_call(self, req: Request<Body>) -> GraphQLServiceResponse {
         let method = req.method().clone();
 
         let path = req.uri().path().to_owned();
@@ -362,45 +359,49 @@ where
 
         // Returning Err here will prevent the client from receiving any response.
         // Instead, we generate a Response with an error code and return Ok
-        Box::new(self.handle_call(req).then(move |result| match result {
-            Ok(response) => Ok(response),
-            Err(err @ GraphQLServerError::Canceled(_)) => {
-                error!(logger, "GraphQLService call failed: {}", err);
+        Box::new(
+            self.clone()
+                .handle_call(req)
+                .then(move |result| match result {
+                    Ok(response) => Ok(response),
+                    Err(err @ GraphQLServerError::Canceled(_)) => {
+                        error!(logger, "GraphQLService call failed: {}", err);
 
-                Ok(Response::builder()
-                    .status(500)
-                    .header("Content-Type", "text/plain")
-                    .body(Body::from("Internal server error (operation canceled)"))
-                    .unwrap())
-            }
-            Err(err @ GraphQLServerError::ClientError(_)) => {
-                debug!(logger, "GraphQLService call failed: {}", err);
+                        Ok(Response::builder()
+                            .status(500)
+                            .header("Content-Type", "text/plain")
+                            .body(Body::from("Internal server error (operation canceled)"))
+                            .unwrap())
+                    }
+                    Err(err @ GraphQLServerError::ClientError(_)) => {
+                        debug!(logger, "GraphQLService call failed: {}", err);
 
-                Ok(Response::builder()
-                    .status(400)
-                    .header("Content-Type", "text/plain")
-                    .body(Body::from(format!("Invalid request: {}", err)))
-                    .unwrap())
-            }
-            Err(err @ GraphQLServerError::QueryError(_)) => {
-                error!(logger, "GraphQLService call failed: {}", err);
+                        Ok(Response::builder()
+                            .status(400)
+                            .header("Content-Type", "text/plain")
+                            .body(Body::from(format!("Invalid request: {}", err)))
+                            .unwrap())
+                    }
+                    Err(err @ GraphQLServerError::QueryError(_)) => {
+                        error!(logger, "GraphQLService call failed: {}", err);
 
-                Ok(Response::builder()
-                    .status(500)
-                    .header("Content-Type", "text/plain")
-                    .body(Body::from(format!("Query error: {}", err)))
-                    .unwrap())
-            }
-            Err(err @ GraphQLServerError::InternalError(_)) => {
-                error!(logger, "GraphQLService call failed: {}", err);
+                        Ok(Response::builder()
+                            .status(500)
+                            .header("Content-Type", "text/plain")
+                            .body(Body::from(format!("Query error: {}", err)))
+                            .unwrap())
+                    }
+                    Err(err @ GraphQLServerError::InternalError(_)) => {
+                        error!(logger, "GraphQLService call failed: {}", err);
 
-                Ok(Response::builder()
-                    .status(500)
-                    .header("Content-Type", "text/plain")
-                    .body(Body::from(format!("Internal server error: {}", err)))
-                    .unwrap())
-            }
-        }))
+                        Ok(Response::builder()
+                            .status(500)
+                            .header("Content-Type", "text/plain")
+                            .body(Body::from(format!("Internal server error: {}", err)))
+                            .unwrap())
+                    }
+                }),
+        )
     }
 }
 

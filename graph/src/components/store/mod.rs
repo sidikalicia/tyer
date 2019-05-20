@@ -353,10 +353,7 @@ where
         // we always throttle it
         let check_synced = |store: &Store, deployment: &SubgraphDeploymentId| {
             if deployment != &*SUBGRAPHS_ID {
-                Box::new(
-                    store
-                        .is_deployment_synced(deployment.clone())
-                )
+                Box::new(store.is_deployment_synced(deployment.clone()))
             } else {
                 Box::new(future::ok(false)) as Box<dyn Future<Item = _, Error = _> + Send>
             }
@@ -746,7 +743,7 @@ pub trait Store: Send + Sync + 'static {
     fn resolve_subgraph_name_to_id(
         self: Arc<Self>,
         name: SubgraphName,
-    ) -> Box<dyn Future<Item = Option<SubgraphDeploymentId>, Error = Error>> {
+    ) -> Box<dyn Future<Item = Option<SubgraphDeploymentId>, Error = Error> + Send + Sync> {
         let self1 = self.clone();
 
         // Find subgraph entity by name
@@ -758,7 +755,10 @@ pub trait Store: Send + Sync + 'static {
             .from_err()
             .and_then(move |subgraph_entities| {
                 let subgraph_entity = match subgraph_entities.len() {
-                    0 => return Box::new(future::ok(None)) as Box<dyn Future<Item = _, Error = _>>,
+                    0 => {
+                        return Box::new(future::ok(None))
+                            as Box<dyn Future<Item = _, Error = _> + Send + Sync>
+                    }
                     1 => {
                         let mut subgraph_entities = subgraph_entities;
                         subgraph_entities.pop().unwrap()
@@ -1031,7 +1031,7 @@ pub trait Store: Send + Sync + 'static {
     fn is_deployed(
         &self,
         id: &SubgraphDeploymentId,
-    ) -> Box<dyn Future<Item = bool, Error = Error>> {
+    ) -> Box<dyn Future<Item = bool, Error = Error> + Send + Sync> {
         // The subgraph of subgraphs is always deployed.
         if id == &*SUBGRAPHS_ID {
             return Box::new(future::ok(true));
@@ -1077,7 +1077,10 @@ pub trait Store: Send + Sync + 'static {
 }
 
 pub trait SubgraphDeploymentStore: Send + Sync + 'static {
-    fn subgraph_schema(&self, subgraph_id: &SubgraphDeploymentId) -> Result<Arc<Schema>, Error>;
+    fn subgraph_schema(
+        &self,
+        subgraph_id: &SubgraphDeploymentId,
+    ) -> Box<dyn Future<Item = Arc<Schema>, Error = Error> + Send + Sync>;
 }
 
 /// Common trait for blockchain store implementations.
