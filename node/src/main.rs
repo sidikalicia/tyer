@@ -242,6 +242,13 @@ fn async_main() -> impl Future<Item = (), Error = ()> + Send + 'static {
                 .env("ETHEREUM_POLLING_INTERVAL")
                 .help("How often to poll the Ethereum node for new blocks"),
         )
+        .arg(
+            Arg::with_name("ethereum-subgraph")
+                .long("ethereum-subgraph")
+                .env("ETHEREUM_SUBGRAPH")
+                .takes_value(false)
+                .help("Whether to index Ethereum block explorer data"),
+        )
         .get_matches();
 
     // Set up logger
@@ -469,6 +476,20 @@ fn async_main() -> impl Future<Item = (), Error = ()> + Send + 'static {
 
         // Run the Ethereum block ingestor in the background
         tokio::spawn(block_ingestor.into_polling_stream());
+    }
+
+    if matches.is_present("ethereum-subgraph") {
+        // Create Ethereum network ingestor
+        let network_ingestor = graph_datasource_ethereum::NetworkIngestor::new(
+            store.clone(),
+            eth_adapter.clone(),
+            ethereum_network_name.to_string(),
+            logger.clone(),
+            elastic_config.clone(),
+        );
+
+        // Run the Ethereum network ingestor
+        tokio::spawn(network_ingestor.into_polling_stream());
     }
 
     // Prepare a block stream builder for subgraphs
