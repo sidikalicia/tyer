@@ -1198,6 +1198,12 @@ impl ChainStore for Store {
     }
 }
 
+impl NetworkStore for Store {
+    fn ensure_network_schema(&self, network_name: String) -> Result<(), Error> {
+        unimplemented!();
+    }
+}
+
 /// Delete all entities. This function exists solely for integration tests
 /// and should never be called from any other code. Unfortunately, Rust makes
 /// it very hard to export items just for testing
