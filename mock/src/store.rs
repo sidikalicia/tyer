@@ -120,201 +120,223 @@ impl MockStore {
 }
 
 impl Store for MockStore {
-    fn get(&self, key: EntityKey) -> Result<Option<Entity>, QueryExecutionError> {
-        Ok(self
-            .entities
-            .lock()
-            .unwrap()
-            .get(&key.subgraph_id)
-            .and_then(|entities_in_subgraph| entities_in_subgraph.get(&key.entity_type))
-            .and_then(|entities_of_type| entities_of_type.get(&key.entity_id))
-            .map(|entity| entity.to_owned()))
+    fn get(
+        &self,
+        key: EntityKey,
+    ) -> Box<dyn Future<Item = Option<Entity>, Error = QueryExecutionError> + Send + Sync> {
+        Box::new(future::ok(
+            self.entities
+                .lock()
+                .unwrap()
+                .get(&key.subgraph_id)
+                .and_then(|entities_in_subgraph| entities_in_subgraph.get(&key.entity_type))
+                .and_then(|entities_of_type| entities_of_type.get(&key.entity_id))
+                .map(|entity| entity.to_owned()),
+        ))
     }
 
-    fn find(&self, query: EntityQuery) -> Result<Vec<Entity>, QueryExecutionError> {
-        self.execute_query(&self.entities.lock().unwrap(), query)
+    fn find(
+        &self,
+        query: EntityQuery,
+    ) -> Box<dyn Future<Item = Vec<Entity>, Error = QueryExecutionError> + Send + Sync> {
+        Box::new(future::result(
+            self.execute_query(&self.entities.lock().unwrap(), query),
+        ))
     }
 
-    fn find_one(&self, query: EntityQuery) -> Result<Option<Entity>, QueryExecutionError> {
-        Ok(self.find(query)?.pop())
+    fn find_one(
+        &self,
+        query: EntityQuery,
+    ) -> Box<dyn Future<Item = Option<Entity>, Error = QueryExecutionError> + Send + Sync> {
+        Box::new(self.find(query).map(|mut e| e.pop()))
     }
 
-    fn find_ens_name(&self, _hash: &str) -> Result<Option<String>, QueryExecutionError> {
-        Ok(None)
+    fn find_ens_name(
+        &self,
+        _hash: &str,
+    ) -> Box<dyn Future<Item = Option<String>, Error = QueryExecutionError> + Send + Sync> {
+        Box::new(future::ok(None))
     }
 
-    fn block_ptr(&self, _: SubgraphDeploymentId) -> Result<EthereumBlockPointer, Error> {
+    fn block_ptr(
+        &self,
+        _subgraph_id: SubgraphDeploymentId,
+    ) -> Box<dyn Future<Item = EthereumBlockPointer, Error = Error>> {
         unimplemented!();
     }
 
     fn set_block_ptr_with_no_changes(
         &self,
-        _: SubgraphDeploymentId,
-        _: EthereumBlockPointer,
-        _: EthereumBlockPointer,
-    ) -> Result<(), StoreError> {
+        _subgraph_id: SubgraphDeploymentId,
+        _block_ptr_from: EthereumBlockPointer,
+        _block_ptr_to: EthereumBlockPointer,
+    ) -> Box<dyn Future<Item = (), Error = StoreError>> {
         unimplemented!();
     }
 
     fn transact_block_operations(
         &self,
-        _: SubgraphDeploymentId,
-        _: EthereumBlockPointer,
-        _: EthereumBlockPointer,
-        _: Vec<EntityOperation>,
-    ) -> Result<(), StoreError> {
+        _subgraph_id: SubgraphDeploymentId,
+        _block_ptr_from: EthereumBlockPointer,
+        _block_ptr_to: EthereumBlockPointer,
+        _operations: Vec<EntityOperation>,
+    ) -> Box<dyn Future<Item = (), Error = StoreError>> {
         unimplemented!();
     }
 
     fn apply_entity_operations(
         &self,
-        ops: Vec<EntityOperation>,
-        _: Option<HistoryEvent>,
-    ) -> Result<(), StoreError> {
-        let mut entities_ref = self.entities.lock().unwrap();
+        operations: Vec<EntityOperation>,
+        _history_event: Option<HistoryEvent>,
+    ) -> Box<dyn Future<Item = (), Error = StoreError>> {
+        let inner = || {
+            let mut entities_ref = self.entities.lock().unwrap();
 
-        let mut entities: HashMap<_, _> = entities_ref.clone();
-        let mut entity_changes = vec![];
-        for op in ops {
-            match op {
-                EntityOperation::Set { key, data } => {
-                    let entities_of_type = entities
-                        .entry(key.subgraph_id.clone())
-                        .or_default()
-                        .entry(key.entity_type.clone())
-                        .or_default();
+            let mut entities: HashMap<_, _> = entities_ref.clone();
+            let mut entity_changes = vec![];
+            for op in operations {
+                match op {
+                    EntityOperation::Set { key, data } => {
+                        let entities_of_type = entities
+                            .entry(key.subgraph_id.clone())
+                            .or_default()
+                            .entry(key.entity_type.clone())
+                            .or_default();
 
-                    if entities_of_type.contains_key(&key.entity_id) {
-                        let existing_entity = entities_of_type.get_mut(&key.entity_id).unwrap();
-                        existing_entity.merge(data);
+                        if entities_of_type.contains_key(&key.entity_id) {
+                            let existing_entity = entities_of_type.get_mut(&key.entity_id).unwrap();
+                            existing_entity.merge(data);
 
-                        entity_changes
-                            .push(EntityChange::from_key(key, EntityChangeOperation::Set));
-                    } else {
-                        let mut new_entity = data;
-                        new_entity.insert("id".to_owned(), key.entity_id.clone().into());
-                        new_entity.retain(|_k, v| *v != Value::Null);
-                        entities_of_type.insert(key.entity_id.clone(), new_entity);
+                            entity_changes
+                                .push(EntityChange::from_key(key, EntityChangeOperation::Set));
+                        } else {
+                            let mut new_entity = data;
+                            new_entity.insert("id".to_owned(), key.entity_id.clone().into());
+                            new_entity.retain(|_k, v| *v != Value::Null);
+                            entities_of_type.insert(key.entity_id.clone(), new_entity);
 
-                        entity_changes
-                            .push(EntityChange::from_key(key, EntityChangeOperation::Set));
+                            entity_changes
+                                .push(EntityChange::from_key(key, EntityChangeOperation::Set));
+                        }
                     }
-                }
-                EntityOperation::Update { key, data, guard } => {
-                    let entities_of_type = entities
-                        .entry(key.subgraph_id.clone())
-                        .or_default()
-                        .entry(key.entity_type.clone())
-                        .or_default();
+                    EntityOperation::Update { key, data, guard } => {
+                        let entities_of_type = entities
+                            .entry(key.subgraph_id.clone())
+                            .or_default()
+                            .entry(key.entity_type.clone())
+                            .or_default();
 
-                    if entities_of_type.contains_key(&key.entity_id) {
-                        let existing_entity = entities_of_type.get_mut(&key.entity_id).unwrap();
-                        if let Some(filter) = guard {
-                            if !entity_matches_filter(existing_entity, &filter) {
-                                return Err(TransactionAbortError::AbortUnless {
-                                    expected_entity_ids: vec![key.entity_id],
-                                    actual_entity_ids: vec![],
-                                    description:
-                                        "update failed because entity does not match guard"
-                                            .to_owned(),
+                        if entities_of_type.contains_key(&key.entity_id) {
+                            let existing_entity = entities_of_type.get_mut(&key.entity_id).unwrap();
+                            if let Some(filter) = guard {
+                                if !entity_matches_filter(existing_entity, &filter) {
+                                    return Err(TransactionAbortError::AbortUnless {
+                                        expected_entity_ids: vec![key.entity_id],
+                                        actual_entity_ids: vec![],
+                                        description:
+                                            "update failed because entity does not match guard"
+                                                .to_owned(),
+                                    }
+                                    .into());
                                 }
-                                .into());
+                            }
+                            existing_entity.merge(data);
+
+                            entity_changes
+                                .push(EntityChange::from_key(key, EntityChangeOperation::Set));
+                        } else {
+                            return Err(TransactionAbortError::AbortUnless {
+                                expected_entity_ids: vec![key.entity_id],
+                                actual_entity_ids: vec![],
+                                description: "update failed because entity does not exist"
+                                    .to_owned(),
+                            }
+                            .into());
+                        }
+                    }
+                    EntityOperation::Remove { key } => {
+                        if let Some(in_subgraph) = entities.get_mut(&key.subgraph_id) {
+                            if let Some(of_type) = in_subgraph.get_mut(&key.entity_type) {
+                                if of_type.remove(&key.entity_id).is_some() {
+                                    entity_changes.push(EntityChange::from_key(
+                                        key,
+                                        EntityChangeOperation::Removed,
+                                    ));
+                                }
                             }
                         }
-                        existing_entity.merge(data);
-
-                        entity_changes
-                            .push(EntityChange::from_key(key, EntityChangeOperation::Set));
-                    } else {
-                        return Err(TransactionAbortError::AbortUnless {
-                            expected_entity_ids: vec![key.entity_id],
-                            actual_entity_ids: vec![],
-                            description: "update failed because entity does not exist".to_owned(),
-                        }
-                        .into());
                     }
-                }
-                EntityOperation::Remove { key } => {
-                    if let Some(in_subgraph) = entities.get_mut(&key.subgraph_id) {
-                        if let Some(of_type) = in_subgraph.get_mut(&key.entity_type) {
-                            if of_type.remove(&key.entity_id).is_some() {
-                                entity_changes.push(EntityChange::from_key(
-                                    key,
-                                    EntityChangeOperation::Removed,
-                                ));
+                    EntityOperation::AbortUnless {
+                        description,
+                        query,
+                        entity_ids: mut expected_entity_ids,
+                    } => {
+                        let query_results = self.execute_query(&entities, query.clone()).unwrap();
+                        let mut actual_entity_ids = query_results
+                            .into_iter()
+                            .map(|entity| entity.id().unwrap())
+                            .collect::<Vec<_>>();
+
+                        if query.order_by.is_none() {
+                            actual_entity_ids.sort();
+                            expected_entity_ids.sort();
+                        }
+
+                        if actual_entity_ids != expected_entity_ids {
+                            return Err(TransactionAbortError::AbortUnless {
+                                expected_entity_ids,
+                                actual_entity_ids,
+                                description,
                             }
+                            .into());
                         }
-                    }
-                }
-                EntityOperation::AbortUnless {
-                    description,
-                    query,
-                    entity_ids: mut expected_entity_ids,
-                } => {
-                    let query_results = self.execute_query(&entities, query.clone()).unwrap();
-                    let mut actual_entity_ids = query_results
-                        .into_iter()
-                        .map(|entity| entity.id().unwrap())
-                        .collect::<Vec<_>>();
-
-                    if query.order_by.is_none() {
-                        actual_entity_ids.sort();
-                        expected_entity_ids.sort();
-                    }
-
-                    if actual_entity_ids != expected_entity_ids {
-                        return Err(TransactionAbortError::AbortUnless {
-                            expected_entity_ids,
-                            actual_entity_ids,
-                            description,
-                        }
-                        .into());
                     }
                 }
             }
-        }
 
-        *entities_ref = entities;
-        ::std::mem::drop(entities_ref);
+            *entities_ref = entities;
+            ::std::mem::drop(entities_ref);
 
-        // Now that the transaction has been committed,
-        // send entity changes to subscribers.
-        let subscriptions = self.subscriptions.lock().unwrap();
-        for entity_change in entity_changes {
-            let entity_type = entity_change.subgraph_entity_pair();
+            // Now that the transaction has been committed,
+            // send entity changes to subscribers.
+            let subscriptions = self.subscriptions.lock().unwrap();
+            for entity_change in entity_changes {
+                let entity_type = entity_change.subgraph_entity_pair();
 
-            for (entity_types_set, sender) in subscriptions.iter() {
-                if entity_types_set.contains(&entity_type) {
-                    let entity_change = entity_change.clone();
-                    let sender = sender.clone();
+                for (entity_types_set, sender) in subscriptions.iter() {
+                    if entity_types_set.contains(&entity_type) {
+                        let entity_change = entity_change.clone();
+                        let sender = sender.clone();
 
-                    tokio::spawn(future::lazy(move || {
-                        let event = StoreEvent::new(vec![entity_change]);
-                        sender
-                            .send(event)
-                            .map(|_| ())
-                            .map_err(|e| panic!("subscription send error: {}", e))
-                    }));
+                        tokio::spawn(future::lazy(move || {
+                            let event = StoreEvent::new(vec![entity_change]);
+                            sender
+                                .send(event)
+                                .map(|_| ())
+                                .map_err(|e| panic!("subscription send error: {}", e))
+                        }));
+                    }
                 }
             }
-        }
 
-        Ok(())
+            Ok(())
+        };
+        Box::new(future::result(inner()))
     }
 
     fn build_entity_attribute_indexes(
         &self,
-        _: Vec<AttributeIndexDefinition>,
-    ) -> Result<(), SubgraphAssignmentProviderError> {
-        Ok(())
+        _indexes: Vec<AttributeIndexDefinition>,
+    ) -> Box<dyn Future<Item = (), Error = SubgraphAssignmentProviderError> + Send + Sync> {
+        Box::new(Ok(()).into_future())
     }
 
     fn revert_block_operations(
         &self,
-        _: SubgraphDeploymentId,
-        _: EthereumBlockPointer,
-        _: EthereumBlockPointer,
-    ) -> Result<(), StoreError> {
+        _subgraph_id: SubgraphDeploymentId,
+        _block_ptr_from: EthereumBlockPointer,
+        _block_ptr_to: EthereumBlockPointer,
+    ) -> Box<dyn Future<Item = (), Error = StoreError> + Send + Sync> {
         unimplemented!();
     }
 
@@ -333,27 +355,36 @@ impl Store for MockStore {
         &self,
         _subgraph_id: &SubgraphDeploymentId,
         ops: Vec<EntityOperation>,
-    ) -> Result<(), StoreError> {
+    ) -> Box<dyn Future<Item = (), Error = StoreError>> {
         self.apply_entity_operations(ops, None)
     }
 }
 
 impl SubgraphDeploymentStore for MockStore {
-    fn subgraph_schema(&self, subgraph_id: &SubgraphDeploymentId) -> Result<Arc<Schema>, Error> {
+    fn subgraph_schema(
+        &self,
+        subgraph_id: &SubgraphDeploymentId,
+    ) -> Box<dyn Future<Item = Arc<Schema>, Error = Error> + Send + Sync> {
         if *subgraph_id == *SUBGRAPHS_ID {
             // The subgraph of subgraphs schema is built-in.
             let raw_schema = include_str!("../../store/postgres/src/subgraphs.graphql").to_owned();
 
             // Parse the schema and add @subgraphId directives
-            let mut schema = Schema::parse(&raw_schema, subgraph_id.clone())?;
+            return Box::new(
+                Schema::parse(&raw_schema, subgraph_id.clone())
+                    .and_then(|mut schema| {
+                        // Generate an API schema for the subgraph and make sure all types in the
+                        // API schema have a @subgraphId directive as well
+                        schema.document = api_schema(&schema.document)?;
 
-            // Generate an API schema for the subgraph and make sure all types in the
-            // API schema have a @subgraphId directive as well
-            schema.document = api_schema(&schema.document)?;
-
-            return Ok(Arc::new(schema));
+                        Ok(Arc::new(schema))
+                    })
+                    .into_future(),
+            ) as Box<dyn Future<Item = _, Error = _> + Send + Sync>;
         }
-        Ok(Arc::new(self.schemas.get(subgraph_id).unwrap().clone()))
+        Box::new(future::ok(Arc::new(
+            self.schemas.get(subgraph_id).unwrap().clone(),
+        )))
     }
 }
 
@@ -403,70 +434,88 @@ impl ChainStore for MockStore {
 pub struct FakeStore;
 
 impl Store for FakeStore {
-    fn get(&self, _: EntityKey) -> Result<Option<Entity>, QueryExecutionError> {
+    fn get(
+        &self,
+        _key: EntityKey,
+    ) -> Box<dyn Future<Item = Option<Entity>, Error = QueryExecutionError> + Send + Sync> {
         unimplemented!();
     }
 
-    fn find(&self, _: EntityQuery) -> Result<Vec<Entity>, QueryExecutionError> {
+    fn find(
+        &self,
+        _query: EntityQuery,
+    ) -> Box<dyn Future<Item = Vec<Entity>, Error = QueryExecutionError> + Send + Sync> {
         unimplemented!();
     }
 
-    fn find_one(&self, _: EntityQuery) -> Result<Option<Entity>, QueryExecutionError> {
+    fn find_one(
+        &self,
+        _query: EntityQuery,
+    ) -> Box<dyn Future<Item = Option<Entity>, Error = QueryExecutionError> + Send + Sync> {
         unimplemented!();
     }
 
-    fn find_ens_name(&self, hash: &str) -> Result<Option<String>, QueryExecutionError> {
+    fn find_ens_name(
+        &self,
+        hash: &str,
+    ) -> Box<dyn Future<Item = Option<String>, Error = QueryExecutionError> + Send + Sync> {
         let s1 = "dealdrafts".to_string();
-        match hash {
-            "0x7f0c1b04d1a4926f9c635a030eeb611d4c26e5e73291b32a1c7a4ac56935b5b3" => Ok(Some(s1)),
-            _ => Ok(None),
-        }
+        Box::new(
+            Ok(match hash {
+                "0x7f0c1b04d1a4926f9c635a030eeb611d4c26e5e73291b32a1c7a4ac56935b5b3" => Some(s1),
+                _ => None,
+            })
+            .into_future(),
+        )
     }
 
-    fn block_ptr(&self, _: SubgraphDeploymentId) -> Result<EthereumBlockPointer, Error> {
+    fn block_ptr(
+        &self,
+        _subgraph_id: SubgraphDeploymentId,
+    ) -> Box<dyn Future<Item = EthereumBlockPointer, Error = Error>> {
         unimplemented!();
     }
 
     fn set_block_ptr_with_no_changes(
         &self,
-        _: SubgraphDeploymentId,
-        _: EthereumBlockPointer,
-        _: EthereumBlockPointer,
-    ) -> Result<(), StoreError> {
+        _subgraph_id: SubgraphDeploymentId,
+        _block_ptr_from: EthereumBlockPointer,
+        _block_ptr_to: EthereumBlockPointer,
+    ) -> Box<dyn Future<Item = (), Error = StoreError>> {
         unimplemented!();
     }
 
     fn transact_block_operations(
         &self,
-        _: SubgraphDeploymentId,
-        _: EthereumBlockPointer,
-        _: EthereumBlockPointer,
-        _: Vec<EntityOperation>,
-    ) -> Result<(), StoreError> {
+        _subgraph_id: SubgraphDeploymentId,
+        _block_ptr_from: EthereumBlockPointer,
+        _block_ptr_to: EthereumBlockPointer,
+        _operations: Vec<EntityOperation>,
+    ) -> Box<dyn Future<Item = (), Error = StoreError>> {
         unimplemented!();
     }
 
     fn apply_entity_operations(
         &self,
-        _: Vec<EntityOperation>,
-        _: Option<HistoryEvent>,
-    ) -> Result<(), StoreError> {
-        Ok(())
+        _operations: Vec<EntityOperation>,
+        _history_event: Option<HistoryEvent>,
+    ) -> Box<dyn Future<Item = (), Error = StoreError>> {
+        Box::new(Ok(()).into_future())
     }
 
     fn build_entity_attribute_indexes(
         &self,
-        _: Vec<AttributeIndexDefinition>,
-    ) -> Result<(), SubgraphAssignmentProviderError> {
-        Ok(())
+        _indexes: Vec<AttributeIndexDefinition>,
+    ) -> Box<dyn Future<Item = (), Error = SubgraphAssignmentProviderError> + Send + Sync> {
+        Box::new(Ok(()).into_future())
     }
 
     fn revert_block_operations(
         &self,
-        _: SubgraphDeploymentId,
-        _: EthereumBlockPointer,
-        _: EthereumBlockPointer,
-    ) -> Result<(), StoreError> {
+        _subgraph_id: SubgraphDeploymentId,
+        _block_ptr_from: EthereumBlockPointer,
+        _block_ptr_to: EthereumBlockPointer,
+    ) -> Box<dyn Future<Item = (), Error = StoreError> + Send + Sync> {
         unimplemented!();
     }
 
@@ -478,7 +527,7 @@ impl Store for FakeStore {
         &self,
         _subgraph_id: &SubgraphDeploymentId,
         _ops: Vec<EntityOperation>,
-    ) -> Result<(), StoreError> {
+    ) -> Box<dyn Future<Item = (), Error = StoreError>> {
         unimplemented!()
     }
 }

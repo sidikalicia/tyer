@@ -721,7 +721,7 @@ pub trait Store: Send + Sync + 'static {
     fn build_entity_attribute_indexes(
         &self,
         indexes: Vec<AttributeIndexDefinition>,
-    ) -> Box<dyn Future<Item = (), Error = SubgraphAssignmentProviderError>>;
+    ) -> Box<dyn Future<Item = (), Error = SubgraphAssignmentProviderError> + Send + Sync>;
 
     /// Revert the entity changes from a single block atomically in the store, and update the
     /// subgraph block pointer from `block_ptr_from` to `block_ptr_to`.
@@ -733,7 +733,7 @@ pub trait Store: Send + Sync + 'static {
         subgraph_id: SubgraphDeploymentId,
         block_ptr_from: EthereumBlockPointer,
         block_ptr_to: EthereumBlockPointer,
-    ) -> Box<dyn Future<Item = (), Error = StoreError>>;
+    ) -> Box<dyn Future<Item = (), Error = StoreError> + Send + Sync>;
 
     /// Subscribe to changes for specific subgraphs and entities.
     ///
@@ -1073,7 +1073,7 @@ pub trait Store: Send + Sync + 'static {
         &self,
         subgraph_id: &SubgraphDeploymentId,
         ops: Vec<EntityOperation>,
-    ) -> Result<(), StoreError>;
+    ) -> Box<dyn Future<Item = (), Error = StoreError>>;
 }
 
 pub trait SubgraphDeploymentStore: Send + Sync + 'static {
