@@ -13,6 +13,9 @@ use crate::store::query::{collect_entities_from_query_field, parse_subgraph_id};
 /// A resolver that fetches entities from a `Store`.
 pub struct StoreResolver<S> {
     logger: Logger,
+
+    // Until we update resolvers to return futures (removing use of `.wait()`),
+    // this store implementation must return futures that immediately resolve.
     store: Arc<S>,
 }
 
@@ -195,7 +198,7 @@ where
         }
 
         let mut entity_values = Vec::new();
-        for entity in self.store.find(query)? {
+        for entity in self.store.find(query).wait()? {
             entity_values.push(entity.into())
         }
         Ok(q::Value::List(entity_values))
@@ -219,11 +222,14 @@ where
         let subgraph_id = parse_subgraph_id(object_type).unwrap();
         let entity = if let Some(id) = id {
             match object_type {
-                ObjectOrInterface::Object(_) => self.store.get(EntityKey {
-                    subgraph_id,
-                    entity_type: object_type.name().to_owned(),
-                    entity_id: id.to_owned(),
-                })?,
+                ObjectOrInterface::Object(_) => self
+                    .store
+                    .get(EntityKey {
+                        subgraph_id,
+                        entity_type: object_type.name().to_owned(),
+                        entity_id: id.to_owned(),
+                    })
+                    .wait()?,
                 ObjectOrInterface::Interface(interface) => {
                     let entity_types = types_for_interface[&interface.name]
                         .iter()
@@ -231,7 +237,7 @@ where
                         .collect();
                     let range = EntityRange::first(1);
                     let query = EntityQuery::new(subgraph_id, entity_types, range);
-                    self.store.find(query)?.into_iter().next()
+                    self.store.find(query).wait()?.into_iter().next()
                 }
             }
         } else {
@@ -254,7 +260,7 @@ where
                 Self::add_filter_for_derived_field(&mut query, parent, derived_from_field);
 
                 // Find the entity or entities that reference the parent entity
-                let entities = self.store.find(query)?;
+                let entities = self.store.find(query).wait()?;
 
                 if entities.len() > 1 {
                     return Err(QueryExecutionError::AmbiguousDerivedFromResult(
@@ -269,11 +275,14 @@ where
             } else {
                 match parent {
                     Some(q::Value::Object(parent_object)) => match parent_object.get(&field.name) {
-                        Some(q::Value::String(id)) => self.store.get(EntityKey {
-                            subgraph_id,
-                            entity_type: object_type.name().to_owned(),
-                            entity_id: id.to_owned(),
-                        })?,
+                        Some(q::Value::String(id)) => self
+                            .store
+                            .get(EntityKey {
+                                subgraph_id,
+                                entity_type: object_type.name().to_owned(),
+                                entity_id: id.to_owned(),
+                            })
+                            .wait()?,
                         _ => None,
                     },
                     _ => panic!("top level queries must either take an `id` or return a list"),
@@ -307,11 +316,15 @@ where
 
         // Subscribe to the store and return the entity change stream
         let deployment_id = parse_subgraph_id(object_type)?;
-        Ok(self.store.subscribe(entities).throttle_while_syncing(
-            &self.logger,
-            self.store.clone(),
-            deployment_id,
-            *SUBSCRIPTION_THROTTLE_INTERVAL,
-        ))
+        self.store
+            .subscribe(entities)
+            .throttle_while_syncing(
+                &self.logger,
+                self.store.clone(),
+                deployment_id,
+                *SUBSCRIPTION_THROTTLE_INTERVAL,
+            )
+            .map_err(|e| QueryExecutionError::StoreError(e))
+            .wait()
     }
 }

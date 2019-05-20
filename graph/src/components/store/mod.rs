@@ -340,7 +340,7 @@ where
         store: Arc<impl Store>,
         deployment: SubgraphDeploymentId,
         interval: Duration,
-    ) -> Box<dyn Future<Item = StoreEventStreamBox, Error = ()>> {
+    ) -> Box<dyn Future<Item = StoreEventStreamBox, Error = Error>> {
         // We refresh the synced flag every SYNC_REFRESH_FREQ*interval to
         // avoid hitting the database too often to see if the subgraph has
         // been synced in the meantime. The only downside of this approach is
@@ -356,10 +356,9 @@ where
                 Box::new(
                     store
                         .is_deployment_synced(deployment.clone())
-                        .map_err(|_| ()),
                 )
             } else {
-                Box::new(future::ok(false)) as Box<dyn Future<Item = bool, Error = ()> + Send>
+                Box::new(future::ok(false)) as Box<dyn Future<Item = _, Error = _> + Send>
             }
         };
         let synced_check_interval = interval.checked_mul(SYNC_REFRESH_FREQ).unwrap();
@@ -372,8 +371,6 @@ where
         let logger = logger.clone();
 
         Box::new(check_synced(&*store, &deployment).map(move |mut synced| {
-            //,let store = store.clone();
-            //let deployment = deployment.clone();
             let source = poll_fn(move || -> Poll<Option<StoreEvent>, ()> {
                 if had_err {
                     // We had an error the last time through, but returned the pending
@@ -385,7 +382,7 @@ where
                 if !synced && synced_last_refreshed.elapsed() > synced_check_interval {
                     synced = match check_synced(&*store, &deployment).poll() {
                         Ok(Async::Ready(synced)) => synced,
-                        Err(()) => return Err(()),
+                        Err(_) => return Err(()),
                         Ok(Async::NotReady) => return Ok(Async::NotReady),
                     };
                     synced_last_refreshed = Instant::now();
