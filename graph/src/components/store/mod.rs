@@ -340,7 +340,7 @@ where
         store: Arc<impl Store>,
         deployment: SubgraphDeploymentId,
         interval: Duration,
-    ) -> StoreEventStreamBox {
+    ) -> Box<dyn Future<Item = StoreEventStreamBox, Error = ()>> {
         // We refresh the synced flag every SYNC_REFRESH_FREQ*interval to
         // avoid hitting the database too often to see if the subgraph has
         // been synced in the meantime. The only downside of this approach is
@@ -352,12 +352,16 @@ where
         // special 'subgraphs' subgraph is never considered synced so that
         // we always throttle it
         let check_synced = |store: &Store, deployment: &SubgraphDeploymentId| {
-            deployment != &*SUBGRAPHS_ID
-                && store
-                    .is_deployment_synced(deployment.clone())
-                    .unwrap_or(false)
+            if deployment != &*SUBGRAPHS_ID {
+                Box::new(
+                    store
+                        .is_deployment_synced(deployment.clone())
+                        .map_err(|_| ()),
+                )
+            } else {
+                Box::new(future::ok(false)) as Box<dyn Future<Item = bool, Error = ()> + Send>
+            }
         };
-        let mut synced = check_synced(&*store, &deployment);
         let synced_check_interval = interval.checked_mul(SYNC_REFRESH_FREQ).unwrap();
         let mut synced_last_refreshed = Instant::now();
 
@@ -367,65 +371,74 @@ where
         let mut delay = tokio_timer::Delay::new(Instant::now() + interval);
         let logger = logger.clone();
 
-        let source = Box::new(poll_fn(move || -> Poll<Option<StoreEvent>, ()> {
-            if had_err {
-                // We had an error the last time through, but returned the pending
-                // event first. Indicate the error now
-                had_err = false;
-                return Err(());
-            }
-
-            if !synced && synced_last_refreshed.elapsed() > synced_check_interval {
-                synced = check_synced(&*store, &deployment);
-                synced_last_refreshed = Instant::now();
-            }
-
-            if synced {
-                return source.poll();
-            }
-
-            // Check if interval has passed since the last time we sent something.
-            // If it has, start a new delay timer
-            let should_send = match delay.poll() {
-                Ok(Async::NotReady) => false,
-                // Timer errors are harmless. Treat them as if the timer had
-                // become ready.
-                Ok(Async::Ready(())) | Err(_) => {
-                    delay = tokio_timer::Delay::new(Instant::now() + interval);
-                    true
+        Box::new(check_synced(&*store, &deployment).map(move |mut synced| {
+            //,let store = store.clone();
+            //let deployment = deployment.clone();
+            let source = poll_fn(move || -> Poll<Option<StoreEvent>, ()> {
+                if had_err {
+                    // We had an error the last time through, but returned the pending
+                    // event first. Indicate the error now
+                    had_err = false;
+                    return Err(());
                 }
-            };
 
-            // Get as many events as we can off of the source stream
-            loop {
-                match source.poll() {
-                    Ok(Async::NotReady) => {
-                        if should_send && pending_event.is_some() {
-                            return Ok(Async::Ready(pending_event.take()));
-                        } else {
-                            return Ok(Async::NotReady);
-                        }
-                    }
-                    Ok(Async::Ready(None)) => {
-                        return Ok(Async::Ready(pending_event.take()));
-                    }
-                    Ok(Async::Ready(Some(event))) => {
-                        StoreEvent::accumulate(&logger, &mut pending_event, event);
-                    }
-                    Err(()) => {
-                        // Before we report the error, deliver what we have accumulated so far.
-                        // We will report the error the next time poll() is called
-                        if pending_event.is_some() {
-                            had_err = true;
-                            return Ok(Async::Ready(pending_event.take()));
-                        } else {
-                            return Err(());
-                        }
+                if !synced && synced_last_refreshed.elapsed() > synced_check_interval {
+                    synced = match check_synced(&*store, &deployment).poll() {
+                        Ok(Async::Ready(synced)) => synced,
+                        Err(()) => return Err(()),
+                        Ok(Async::NotReady) => return Ok(Async::NotReady),
+                    };
+                    synced_last_refreshed = Instant::now();
+                }
+
+                if synced {
+                    return source.poll();
+                }
+
+                // Check if interval has passed since the last time we sent something.
+                // If it has, start a new delay timer
+                let should_send = match delay.poll() {
+                    Ok(Async::NotReady) => false,
+                    // Timer errors are harmless. Treat them as if the timer had
+                    // become ready.
+                    Ok(Async::Ready(())) | Err(_) => {
+                        delay = tokio_timer::Delay::new(Instant::now() + interval);
+                        true
                     }
                 };
-            }
-        }));
-        StoreEventStream::new(source)
+
+                // Get as many events as we can off of the source stream
+                loop {
+                    match source.poll() {
+                        Ok(Async::NotReady) => {
+                            if should_send && pending_event.is_some() {
+                                return Ok(Async::Ready(pending_event.take()));
+                            } else {
+                                return Ok(Async::NotReady);
+                            }
+                        }
+                        Ok(Async::Ready(None)) => {
+                            return Ok(Async::Ready(pending_event.take()));
+                        }
+                        Ok(Async::Ready(Some(event))) => {
+                            StoreEvent::accumulate(&logger, &mut pending_event, event);
+                        }
+                        Err(()) => {
+                            // Before we report the error, deliver what we have accumulated so far.
+                            // We will report the error the next time poll() is called
+                            if pending_event.is_some() {
+                                had_err = true;
+                                return Ok(Async::Ready(pending_event.take()));
+                            } else {
+                                return Err(());
+                            }
+                        }
+                    };
+                }
+            });
+
+            StoreEventStream::new(Box::new(source) as Box<dyn Stream<Item = _, Error = _> + Send>)
+        }))
     }
 }
 
@@ -649,20 +662,35 @@ pub enum TransactionAbortError {
 /// Common trait for store implementations.
 pub trait Store: Send + Sync + 'static {
     /// Get a pointer to the most recently processed block in the subgraph.
-    fn block_ptr(&self, subgraph_id: SubgraphDeploymentId) -> Result<EthereumBlockPointer, Error>;
+    fn block_ptr(
+        &self,
+        subgraph_id: SubgraphDeploymentId,
+    ) -> Box<dyn Future<Item = EthereumBlockPointer, Error = Error>>;
 
     /// Looks up an entity using the given store key.
-    fn get(&self, key: EntityKey) -> Result<Option<Entity>, QueryExecutionError>;
+    fn get(
+        &self,
+        key: EntityKey,
+    ) -> Box<dyn Future<Item = Option<Entity>, Error = QueryExecutionError> + Send + Sync>;
 
     /// Queries the store for entities that match the store query.
-    fn find(&self, query: EntityQuery) -> Result<Vec<Entity>, QueryExecutionError>;
+    fn find(
+        &self,
+        query: EntityQuery,
+    ) -> Box<dyn Future<Item = Vec<Entity>, Error = QueryExecutionError> + Send + Sync>;
 
     /// Queries the store for a single entity matching the store query.
-    fn find_one(&self, query: EntityQuery) -> Result<Option<Entity>, QueryExecutionError>;
+    fn find_one(
+        &self,
+        query: EntityQuery,
+    ) -> Box<dyn Future<Item = Option<Entity>, Error = QueryExecutionError> + Send + Sync>;
 
     /// Find the reverse of keccak256 for `hash` through looking it up in the
     /// rainbow table.
-    fn find_ens_name(&self, _hash: &str) -> Result<Option<String>, QueryExecutionError>;
+    fn find_ens_name(
+        &self,
+        hash: &str,
+    ) -> Box<dyn Future<Item = Option<String>, Error = QueryExecutionError> + Send + Sync>;
 
     /// Updates the block pointer.  Careful: this is only safe to use if it is known that no store
     /// changes are needed to go from `block_ptr_from` to `block_ptr_to`.
@@ -673,7 +701,7 @@ pub trait Store: Send + Sync + 'static {
         subgraph_id: SubgraphDeploymentId,
         block_ptr_from: EthereumBlockPointer,
         block_ptr_to: EthereumBlockPointer,
-    ) -> Result<(), StoreError>;
+    ) -> Box<dyn Future<Item = (), Error = StoreError>>;
 
     /// Transact the entity changes from a single block atomically into the store, and update the
     /// subgraph block pointer from `block_ptr_from` to `block_ptr_to`.
@@ -686,20 +714,20 @@ pub trait Store: Send + Sync + 'static {
         block_ptr_from: EthereumBlockPointer,
         block_ptr_to: EthereumBlockPointer,
         operations: Vec<EntityOperation>,
-    ) -> Result<(), StoreError>;
+    ) -> Box<dyn Future<Item = (), Error = StoreError>>;
 
     /// Apply the specified entity operations
     fn apply_entity_operations(
         &self,
         operations: Vec<EntityOperation>,
         history_event: Option<HistoryEvent>,
-    ) -> Result<(), StoreError>;
+    ) -> Box<dyn Future<Item = (), Error = StoreError>>;
 
     /// Build indexes for a set of subgraph entity attributes
     fn build_entity_attribute_indexes(
         &self,
         indexes: Vec<AttributeIndexDefinition>,
-    ) -> Result<(), SubgraphAssignmentProviderError>;
+    ) -> Box<dyn Future<Item = (), Error = SubgraphAssignmentProviderError>>;
 
     /// Revert the entity changes from a single block atomically in the store, and update the
     /// subgraph block pointer from `block_ptr_from` to `block_ptr_to`.
@@ -711,7 +739,7 @@ pub trait Store: Send + Sync + 'static {
         subgraph_id: SubgraphDeploymentId,
         block_ptr_from: EthereumBlockPointer,
         block_ptr_to: EthereumBlockPointer,
-    ) -> Result<(), StoreError>;
+    ) -> Box<dyn Future<Item = (), Error = StoreError>>;
 
     /// Subscribe to changes for specific subgraphs and entities.
     ///
@@ -719,67 +747,84 @@ pub trait Store: Send + Sync + 'static {
     fn subscribe(&self, entities: Vec<SubgraphEntityPair>) -> StoreEventStreamBox;
 
     fn resolve_subgraph_name_to_id(
-        &self,
+        self: Arc<Self>,
         name: SubgraphName,
-    ) -> Result<Option<SubgraphDeploymentId>, Error> {
+    ) -> Box<dyn Future<Item = Option<SubgraphDeploymentId>, Error = Error>> {
+        let self1 = self.clone();
+
         // Find subgraph entity by name
-        let subgraph_entities = self
-            .find(SubgraphEntity::query().filter(EntityFilter::Equal(
+        Box::new(
+            self.find(SubgraphEntity::query().filter(EntityFilter::Equal(
                 "name".to_owned(),
                 name.to_string().into(),
             )))
-            .map_err(QueryError::from)?;
-        let subgraph_entity = match subgraph_entities.len() {
-            0 => return Ok(None),
-            1 => {
-                let mut subgraph_entities = subgraph_entities;
-                Ok(subgraph_entities.pop().unwrap())
-            }
-            _ => Err(format_err!(
-                "Multiple subgraphs found with name {:?}",
-                name.to_string()
-            )),
-        }?;
+            .from_err()
+            .and_then(move |subgraph_entities| {
+                let subgraph_entity = match subgraph_entities.len() {
+                    0 => return Box::new(future::ok(None)) as Box<dyn Future<Item = _, Error = _>>,
+                    1 => {
+                        let mut subgraph_entities = subgraph_entities;
+                        subgraph_entities.pop().unwrap()
+                    }
+                    _ => {
+                        return Box::new(future::err(format_err!(
+                            "Multiple subgraphs found with name {:?}",
+                            name.to_string()
+                        )))
+                    }
+                };
 
-        // Get current active subgraph version ID
-        let current_version_id = match subgraph_entity.get("currentVersion").ok_or_else(|| {
-            format_err!(
-                "Subgraph entity has no `currentVersion`. \
-                 The subgraph may have been created but not deployed yet. Make sure \
-                 to run `graph deploy` to deploy the subgraph and have it start \
-                 indexing."
-            )
-        })? {
-            Value::String(s) => s.to_owned(),
-            Value::Null => return Ok(None),
-            _ => {
-                return Err(format_err!(
-                    "Subgraph entity has wrong type in `currentVersion`"
-                ));
-            }
-        };
+                // Get current active subgraph version ID
+                let current_version_id =
+                    match subgraph_entity.get("currentVersion").ok_or_else(|| {
+                        format_err!(
+                            "Subgraph entity has no `currentVersion`. \
+                             The subgraph may have been created but not deployed yet. Make sure \
+                             to run `graph deploy` to deploy the subgraph and have it start \
+                             indexing."
+                        )
+                    }) {
+                        Err(e) => return Box::new(future::err(e)),
+                        Ok(Value::String(s)) => s.to_owned(),
+                        Ok(Value::Null) => return Box::new(future::ok(None)),
+                        Ok(_) => {
+                            return Box::new(future::err(format_err!(
+                                "Subgraph entity has wrong type in `currentVersion`"
+                            )));
+                        }
+                    };
 
-        // Read subgraph version entity
-        let version_entity_opt = self
-            .get(SubgraphVersionEntity::key(current_version_id))
-            .map_err(QueryError::from)?;
-        if version_entity_opt == None {
-            return Ok(None);
-        }
-        let version_entity = version_entity_opt.unwrap();
-
-        // Parse subgraph ID
-        let subgraph_id_str = version_entity
-            .get("deployment")
-            .ok_or_else(|| format_err!("SubgraphVersion entity without `deployment`"))?
-            .to_owned()
-            .as_string()
-            .ok_or_else(|| format_err!("SubgraphVersion entity has wrong type in `deployment`"))?;
-        SubgraphDeploymentId::new(subgraph_id_str)
-            .map_err(|()| {
-                format_err!("SubgraphVersion entity has invalid subgraph ID in `deployment`")
+                // Read subgraph version entity
+                Box::new(
+                    self1
+                        .get(SubgraphVersionEntity::key(current_version_id))
+                        .from_err::<Error>(),
+                )
             })
-            .map(Some)
+            .and_then(|version_entity_opt| {
+                if version_entity_opt == None {
+                    return Ok(None);
+                }
+                let version_entity = version_entity_opt.unwrap();
+
+                // Parse subgraph ID
+                let subgraph_id_str = version_entity
+                    .get("deployment")
+                    .ok_or_else(|| format_err!("SubgraphVersion entity without `deployment`"))?
+                    .to_owned()
+                    .as_string()
+                    .ok_or_else(|| {
+                        format_err!("SubgraphVersion entity has wrong type in `deployment`")
+                    })?;
+                SubgraphDeploymentId::new(subgraph_id_str)
+                    .map_err(|()| {
+                        format_err!(
+                            "SubgraphVersion entity has invalid subgraph ID in `deployment`"
+                        )
+                    })
+                    .map(Some)
+            }),
+        )
     }
 
     /// Read all version entities pointing to the specified deployment IDs and
@@ -790,9 +835,10 @@ pub trait Store: Send + Sync + 'static {
     /// `EntityOperation`s, which will abort the transaction if the version
     /// summaries are out of date by the time the entity operations are applied.
     fn read_subgraph_version_summaries(
-        &self,
+        self: Arc<Self>,
         deployment_ids: Vec<SubgraphDeploymentId>,
-    ) -> Result<(Vec<SubgraphVersionSummary>, Vec<EntityOperation>), Error> {
+    ) -> Box<dyn Future<Item = (Vec<SubgraphVersionSummary>, Vec<EntityOperation>), Error = Error>>
+    {
         let version_filter = EntityFilter::new_in(
             "deployment",
             deployment_ids.iter().map(|id| id.to_string()).collect(),
@@ -800,98 +846,111 @@ pub trait Store: Send + Sync + 'static {
 
         let mut ops = vec![];
 
-        let versions = self.find(SubgraphVersionEntity::query().filter(version_filter.clone()))?;
-        let version_ids = versions
-            .iter()
-            .map(|version_entity| version_entity.id().unwrap())
-            .collect::<Vec<_>>();
-        ops.push(EntityOperation::AbortUnless {
-            description: "Same set of subgraph versions must match filter".to_owned(),
-            query: SubgraphVersionEntity::query().filter(version_filter),
-            entity_ids: version_ids.clone(),
-        });
+        Box::new(
+            self.find(SubgraphVersionEntity::query().filter(version_filter.clone()))
+                .and_then(move |versions| {
+                    let version_ids = versions
+                        .iter()
+                        .map(|version_entity| version_entity.id().unwrap())
+                        .collect::<Vec<_>>();
+                    ops.push(EntityOperation::AbortUnless {
+                        description: "Same set of subgraph versions must match filter".to_owned(),
+                        query: SubgraphVersionEntity::query().filter(version_filter),
+                        entity_ids: version_ids.clone(),
+                    });
 
-        // Find subgraphs with one of these versions as current or pending
-        let subgraphs_with_version_as_current_or_pending =
-            self.find(SubgraphEntity::query().filter(EntityFilter::Or(vec![
-                EntityFilter::new_in("currentVersion", version_ids.clone()),
-                EntityFilter::new_in("pendingVersion", version_ids.clone()),
-            ])))?;
-        let subgraph_ids_with_version_as_current_or_pending =
-            subgraphs_with_version_as_current_or_pending
-                .iter()
-                .map(|subgraph_entity| subgraph_entity.id().unwrap())
-                .collect::<HashSet<_>>();
-        ops.push(EntityOperation::AbortUnless {
-            description: "Same set of subgraphs must have these versions as current or pending"
-                .to_owned(),
-            query: SubgraphEntity::query().filter(EntityFilter::Or(vec![
-                EntityFilter::new_in("currentVersion", version_ids.clone()),
-                EntityFilter::new_in("pendingVersion", version_ids),
-            ])),
-            entity_ids: subgraph_ids_with_version_as_current_or_pending
-                .into_iter()
-                .collect(),
-        });
-
-        // Produce summaries, deriving flags from information in subgraph entities
-        let version_summaries =
-            versions
-                .into_iter()
-                .map(|version_entity| {
-                    let version_entity_id = version_entity.id().unwrap();
-                    let version_entity_id_value = Value::String(version_entity_id.clone());
-                    let subgraph_id = version_entity
-                        .get("subgraph")
-                        .unwrap()
-                        .to_owned()
-                        .as_string()
-                        .unwrap();
-
-                    let is_current = subgraphs_with_version_as_current_or_pending.iter().any(
-                        |subgraph_entity| {
-                            if subgraph_entity.get("currentVersion")
-                                == Some(&version_entity_id_value)
-                            {
-                                assert_eq!(subgraph_entity.id().unwrap(), subgraph_id);
-                                true
-                            } else {
-                                false
-                            }
-                        },
-                    );
-                    let is_pending = subgraphs_with_version_as_current_or_pending.iter().any(
-                        |subgraph_entity| {
-                            if subgraph_entity.get("pendingVersion")
-                                == Some(&version_entity_id_value)
-                            {
-                                assert_eq!(subgraph_entity.id().unwrap(), subgraph_id);
-                                true
-                            } else {
-                                false
-                            }
-                        },
-                    );
-
-                    SubgraphVersionSummary {
-                        id: version_entity_id,
-                        subgraph_id,
-                        deployment_id: SubgraphDeploymentId::new(
-                            version_entity
-                                .get("deployment")
-                                .unwrap()
-                                .to_owned()
-                                .as_string()
-                                .unwrap(),
-                        )
-                        .unwrap(),
-                        current: is_current,
-                        pending: is_pending,
-                    }
+                    // Find subgraphs with one of these versions as current or pending
+                    let query = SubgraphEntity::query().filter(EntityFilter::Or(vec![
+                        EntityFilter::new_in("currentVersion", version_ids.clone()),
+                        EntityFilter::new_in("pendingVersion", version_ids.clone()),
+                    ]));
+                    (
+                        future::ok(ops),
+                        future::ok(query.clone()),
+                        future::ok(versions),
+                        self.find(query.clone()),
+                    )
                 })
-                .collect();
+                .and_then(
+                    |(mut ops, query, versions, subgraphs_with_version_as_current_or_pending)| {
+                        let subgraph_ids_with_version_as_current_or_pending =
+                            subgraphs_with_version_as_current_or_pending
+                                .iter()
+                                .map(|subgraph_entity| subgraph_entity.id().unwrap())
+                                .collect::<HashSet<_>>();
 
-        Ok((version_summaries, ops))
+                        ops.push(EntityOperation::AbortUnless {
+                            description: "Same set of subgraphs must have these \
+                                          versions as current or pending"
+                                .to_owned(),
+                            query,
+                            entity_ids: subgraph_ids_with_version_as_current_or_pending
+                                .into_iter()
+                                .collect(),
+                        });
+
+                        // Produce summaries, deriving flags from information in subgraph entities
+                        let version_summaries = versions
+                            .into_iter()
+                            .map(|version_entity| {
+                                let version_entity_id = version_entity.id().unwrap();
+                                let version_entity_id_value =
+                                    Value::String(version_entity_id.clone());
+                                let subgraph_id = version_entity
+                                    .get("subgraph")
+                                    .unwrap()
+                                    .to_owned()
+                                    .as_string()
+                                    .unwrap();
+
+                                let is_current = subgraphs_with_version_as_current_or_pending
+                                    .iter()
+                                    .any(|subgraph_entity| {
+                                        if subgraph_entity.get("currentVersion")
+                                            == Some(&version_entity_id_value)
+                                        {
+                                            assert_eq!(subgraph_entity.id().unwrap(), subgraph_id);
+                                            true
+                                        } else {
+                                            false
+                                        }
+                                    });
+                                let is_pending = subgraphs_with_version_as_current_or_pending
+                                    .iter()
+                                    .any(|subgraph_entity| {
+                                        if subgraph_entity.get("pendingVersion")
+                                            == Some(&version_entity_id_value)
+                                        {
+                                            assert_eq!(subgraph_entity.id().unwrap(), subgraph_id);
+                                            true
+                                        } else {
+                                            false
+                                        }
+                                    });
+
+                                SubgraphVersionSummary {
+                                    id: version_entity_id,
+                                    subgraph_id,
+                                    deployment_id: SubgraphDeploymentId::new(
+                                        version_entity
+                                            .get("deployment")
+                                            .unwrap()
+                                            .to_owned()
+                                            .as_string()
+                                            .unwrap(),
+                                    )
+                                    .unwrap(),
+                                    current: is_current,
+                                    pending: is_pending,
+                                }
+                            })
+                            .collect();
+
+                        Ok((version_summaries, ops))
+                    },
+                )
+                .from_err(),
+        )
     }
 
     /// Produce the EntityOperations needed to create/remove
@@ -972,34 +1031,47 @@ pub trait Store: Send + Sync + 'static {
     /// Check if the store is accepting queries for the specified subgraph.
     /// May return true even if the specified subgraph is not currently assigned to an indexing
     /// node, as the store will still accept queries.
-    fn is_deployed(&self, id: &SubgraphDeploymentId) -> Result<bool, Error> {
+    fn is_deployed(
+        &self,
+        id: &SubgraphDeploymentId,
+    ) -> Box<dyn Future<Item = bool, Error = Error>> {
         // The subgraph of subgraphs is always deployed.
         if id == &*SUBGRAPHS_ID {
-            return Ok(true);
+            return Box::new(future::ok(true));
         }
 
         // Check store for a deployment entity for this subgraph ID
-        self.get(SubgraphDeploymentEntity::key(id.to_owned()))
-            .map_err(|e| format_err!("Failed to query SubgraphDeployment entities: {}", e))
-            .map(|entity_opt| entity_opt.is_some())
+        Box::new(
+            self.get(SubgraphDeploymentEntity::key(id.to_owned()))
+                .map_err(|e| format_err!("Failed to query SubgraphDeployment entities: {}", e))
+                .map(|entity_opt| entity_opt.is_some()),
+        )
     }
 
     /// Return true if the deployment with the given id is fully synced,
-    /// and return false otherwise. Errors from the store are passed back up
-    fn is_deployment_synced(&self, id: SubgraphDeploymentId) -> Result<bool, Error> {
-        let entity = self.get(SubgraphDeploymentEntity::key(id))?;
-        entity
-            .map(|entity| match entity.get("synced") {
-                Some(Value::Bool(true)) => Ok(true),
-                _ => Ok(false),
-            })
-            .unwrap_or(Ok(false))
+    /// and return false otherwise. Errors from the store are passed back up.
+    fn is_deployment_synced(
+        &self,
+        id: SubgraphDeploymentId,
+    ) -> Box<dyn Future<Item = bool, Error = Error> + Send> {
+        Box::new(
+            self.get(SubgraphDeploymentEntity::key(id))
+                .and_then(|entity| {
+                    entity
+                        .map(|entity| match entity.get("synced") {
+                            Some(Value::Bool(true)) => Ok(true),
+                            _ => Ok(false),
+                        })
+                        .unwrap_or(Ok(false))
+                })
+                .from_err(),
+        )
     }
 
     /// Create a new subgraph deployment. The deployment must not exist yet. `ops`
     /// needs to contain all the operations on subgraphs and subgraph deployments to
     /// create the deployment, including any assignments as a current or pending
-    /// version
+    /// version.
     fn create_subgraph_deployment(
         &self,
         subgraph_id: &SubgraphDeploymentId,
@@ -1019,7 +1091,10 @@ pub trait ChainStore: Send + Sync + 'static {
     fn genesis_block_ptr(&self) -> Result<EthereumBlockPointer, Error>;
 
     /// Insert blocks into the store (or update if they are already present).
-    fn upsert_blocks<'a, B, E>(&self, blocks: B) -> Box<Future<Item = (), Error = E> + Send + 'a>
+    fn upsert_blocks<'a, B, E>(
+        &self,
+        blocks: B,
+    ) -> Box<dyn Future<Item = (), Error = E> + Send + 'a>
     where
         B: Stream<Item = EthereumBlock, Error = E> + Send + 'a,
         E: From<Error> + Send + 'a;
