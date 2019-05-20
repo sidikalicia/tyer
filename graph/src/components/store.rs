@@ -1066,3 +1066,7 @@ pub trait ChainStore: Send + Sync + 'static {
         offset: u64,
     ) -> Result<Option<EthereumBlock>, Error>;
 }
+
+pub trait NetworkStore: Send + Sync + 'static {
+    fn ensure_network_schema(&self, network_name: String) -> Result<(), Error>;
+}
