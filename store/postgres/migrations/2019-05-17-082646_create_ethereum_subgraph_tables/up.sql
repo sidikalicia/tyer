@@ -1,3 +1,21 @@
+create schema ethereum_mainnet;
+
+create table ethereum_mainnet.status {
+  head_block_hash bytea
+}
+
+create table ethereum_mainnet.accounts (
+  id      bytea primary key not null,
+  address bytea unique not null,
+  balance numeric not null
+);
+
+create table ethereum_mainnet.contracts (
+  id      bytea primary key not null,
+  address bytea unique not null,
+  balance numeric not null
+);
+
 create table ethereum_mainnet.blocks (
   id                bytea primary key not null,
 
@@ -21,7 +39,7 @@ create table ethereum_mainnet.blocks (
   total_difficulty  numeric not null,
   -- TODO: Account for `seal_fields`
   size              numeric not null,
-  mix_hash          bytea,
+  mix_hash          bytea
 );
 
 create table ethereum_mainnet.transactions (
@@ -32,14 +50,14 @@ create table ethereum_mainnet.transactions (
   transaction_index numeric not null,
   nonce             numeric not null,
 
-  from              bytea not null,
-  to                bytea,
-  value             bytea not null,
-  input             bytea not null,
+  from_             bytea not null,
+  to_               bytea,
+  value_            bytea not null,
+  input_            bytea not null,
 
   gas_price         numeric not null,
-  gas               numeric not null,
-)
+  gas               numeric not null
+);
 
 create table ethereum_mainnet.transaction_receipts (
   id                  bytea primary key not null,
@@ -50,8 +68,8 @@ create table ethereum_mainnet.transaction_receipts (
 
   cumulative_gas_used numeric not null,
   gas_used            numeric not null,
-  status              int2 not null,
-)
+  status              int2 not null
+);
 
 create table ethereum_mainnet.log (
   id                    bytea primary key not null,
@@ -65,18 +83,6 @@ create table ethereum_mainnet.log (
   -- TODO: Account for `topics`
 
   data                  bytea not null,
-  log_type              string,
-  removed               boolean not null,
-)
-
-create table ethereum_mainnet.accounts (
-  id      bytea primary key not null,
-  address bytea unique not null,
-  balance numeric not null,
-)
-
-create table ethereum_mainnet.contracts (
-  id      bytea primary key not null,
-  address bytea unique not null,
-  balance numeric not null,
-)
+  log_type              varchar,
+  removed               boolean not null
+);
