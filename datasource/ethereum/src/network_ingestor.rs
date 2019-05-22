@@ -1,8 +1,9 @@
 use futures::future::{loop_fn, Loop};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use graph::prelude::*;
+use graph::tokio::timer::Delay;
 
 pub struct NetworkIngestor<S, E>
 where
@@ -75,6 +76,7 @@ where
             })
             .and_then(|_| {
                 loop_fn(self, |ingestor| {
+                    println!("Ingesting next block");
                     ingestor
                         .ingest_next_block()
                         .map(|ingestor| Loop::Continue(ingestor))
@@ -95,6 +97,85 @@ where
     }
 
     fn ingest_next_block(self) -> impl Future<Item = Self, Error = Error> {
-        future::ok(self)
+        let store_for_head_ptr = self.store.clone();
+        let network_name_for_head_ptr = self.network_name.clone();
+
+        let store_for_write = self.store.clone();
+        let network_name_for_write = self.network_name.clone();
+
+        let eth_adapter_for_hash = self.eth_adapter.clone();
+        let logger_for_hash = self.logger.clone();
+
+        let eth_adapter_for_block = self.eth_adapter.clone();
+        let logger_for_block = self.logger.clone();
+
+        let eth_adapter_for_full_block = self.eth_adapter.clone();
+        let logger_for_full_block = self.logger.clone();
+
+        self.eth_adapter
+            .clone()
+            .latest_block(&self.logger)
+            .from_err()
+            .and_then(move |latest_block| {
+                println!("Have a latest block");
+
+                store_for_head_ptr
+                    .clone()
+                    .head_block_ptr(network_name_for_head_ptr)
+                    .map(|network_head_ptr| (latest_block, network_head_ptr))
+            })
+            .and_then(move |(latest_block, network_head_ptr)| {
+                println!(
+                    "Have a network head pointer: chain = {:?}, network = {:?}",
+                    latest_block.number, network_head_ptr
+                );
+
+                if network_head_ptr.is_some()
+                    && latest_block.number.unwrap().low_u64()
+                        <= network_head_ptr.map_or(0u64, |ptr| ptr.number)
+                {
+                    // Try again in 1s
+                    Box::new(
+                        Delay::new(Instant::now() + Duration::from_secs(1))
+                            .from_err()
+                            .and_then(|_| future::ok(self)),
+                    ) as Box<dyn Future<Item = _, Error = _> + Send>
+                } else {
+                    Box::new(
+                        eth_adapter_for_hash
+                            .block_hash_by_block_number(
+                                &logger_for_hash,
+                                network_head_ptr.map_or(0u64, |ptr| ptr.number + 1),
+                            )
+                            .and_then(move |hash| match hash {
+                                Some(hash) => Box::new(
+                                    eth_adapter_for_block
+                                        .block_by_hash(&logger_for_block, hash)
+                                        .from_err()
+                                        .and_then(move |block| match block {
+                                            Some(block) => eth_adapter_for_full_block
+                                                .load_full_block(&logger_for_full_block, block),
+                                            None => unimplemented!(), // TODO: try again
+                                        })
+                                        .from_err()
+                                        .and_then(move |block| {
+                                            warn!(
+                                                logger_for_block,
+                                                "Ingesting block {} ({})",
+                                                block.block.hash.unwrap(),
+                                                block.block.number.unwrap()
+                                            );
+
+                                            store_for_write
+                                                .write_block(network_name_for_write, block)
+                                                .and_then(|_| future::ok(self))
+                                        }),
+                                ),
+                                None => Box::new(future::ok(self))
+                                    as Box<dyn Future<Item = _, Error = _> + Send>,
+                            }),
+                    )
+                }
+            })
     }
 }
