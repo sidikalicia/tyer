@@ -2,8 +2,11 @@ use diesel::connection::SimpleConnection;
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
 use diesel::r2d2::{self, ConnectionManager, Pool, PooledConnection};
+use diesel::sql_types::{Bytea, Numeric, Text};
 use diesel::{insert_into, select, update};
+use diesel_dynamic_schema::{schema, Column, Table as DynamicTable};
 use futures::sync::mpsc::{channel, Sender};
+use graph::bigdecimal::ToPrimitive;
 use lru_time_cache::LruCache;
 use std::collections::HashMap;
 use std::sync::{Mutex, RwLock};
@@ -1198,9 +1201,129 @@ impl ChainStore for Store {
     }
 }
 
+#[derive(Queryable, QueryableByName, Debug)]
+struct SqlEthereumBlockPointer {
+    #[sql_type = "Bytea"]
+    head_block_hash: Vec<u8>,
+    #[sql_type = "Numeric"]
+    head_block_number: BigDecimal,
+}
+
 impl NetworkStore for Store {
-    fn ensure_network_schema(&self, network_name: String) -> Result<(), Error> {
-        unimplemented!();
+    fn ensure_network_schema(&self, _network_name: String) -> Result<(), Error> {
+        // TODO Implement this by creating a relational schema from
+        // the GraphQL schema
+        Ok(())
+    }
+
+    fn head_block_ptr(
+        &self,
+        network_name: String,
+    ) -> Box<Future<Item = Option<EthereumBlockPointer>, Error = Error> + Send> {
+        let schema_name = format!("ethereum_{}", network_name);
+        let table = schema(schema_name).table("status".to_string());
+        let name = table.column::<Text, _>("name".to_string());
+        let head_block_hash = table.column::<Bytea, _>("head_block_hash".to_string());
+        let head_block_number = table.column::<Numeric, _>("head_block_number".to_string());
+
+        let conn = match self.get_conn() {
+            Ok(conn) => conn,
+            Err(e) => {
+                return Box::new(future::err(format_err!(
+                    "failed to obtain database connection: {}",
+                    e
+                )))
+            }
+        };
+
+        let raw_ptr = match table
+            .filter(name.eq(&network_name))
+            .select((head_block_hash, head_block_number))
+            .first::<SqlEthereumBlockPointer>(&*conn)
+        {
+            Ok(value) => value,
+            Err(e) => {
+                return match e {
+                    diesel::result::Error::NotFound => Box::new(future::ok(None)),
+                    _ => Box::new(future::err(format_err!(
+                        "Failed to query status of Ethereum network `{}`: {}",
+                        &network_name,
+                        e
+                    ))),
+                };
+            }
+        };
+
+        Box::new(future::ok(Some(EthereumBlockPointer::from((
+            raw_ptr.head_block_hash.as_slice().into(),
+            raw_ptr
+                .head_block_number
+                .to_u64()
+                .expect("invalid head block number"),
+        )
+            as (H256, u64)))))
+    }
+
+    fn write_block(
+        &self,
+        network_name: String,
+        block: EthereumBlock,
+    ) -> Box<Future<Item = (), Error = Error> + Send> {
+        // TODO: Write logs
+        // TODO: Write transaction receipts
+        // TODO: Write transactions
+        // TODO: Write block
+        // TODO: Figure out how to best get and update balances of affected accounts
+        //       -> may need new methods in EthereumAdapter to get the balance of an account
+        // TODO: Update the network status
+
+        self.update_network_status(network_name, block.into())
+    }
+}
+
+impl Store {
+    fn update_network_status(
+        &self,
+        network_name: String,
+        block_ptr: EthereumBlockPointer,
+    ) -> Box<Future<Item = (), Error = Error> + Send> {
+        let conn = match self.get_conn() {
+            Ok(conn) => conn,
+            Err(e) => {
+                return Box::new(future::err(format_err!(
+                    "failed to obtain database connection: {}",
+                    e
+                )))
+            }
+        };
+
+        let query = format!(
+            "insert into ethereum_{}.status
+               (name, head_block_hash, head_block_number)
+             values
+               ($1, $2, $3)
+             on conflict (name)
+               do update
+                  set head_block_hash = $2,
+                      head_block_number = $3",
+            network_name,
+        );
+
+        Box::new(future::result(
+            diesel::sql_query(query)
+                .bind::<Text, _>(&network_name)
+                .bind::<Bytea, _>(&*block_ptr.hash)
+                .bind::<Numeric, _>(&BigDecimal::from(block_ptr.number))
+                .execute(&*conn)
+                .map(|_| ())
+                .map_err(|e| {
+                    format_err!(
+                        "Failed to query status of Ethereum network `{}`: {}",
+                        &network_name,
+                        e
+                    )
+                }),
+        ))
     }
 }
 
