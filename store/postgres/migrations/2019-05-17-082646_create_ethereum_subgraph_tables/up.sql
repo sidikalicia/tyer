@@ -1,8 +1,11 @@
 create schema ethereum_mainnet;
 
-create table ethereum_mainnet.status {
-  head_block_hash bytea
-}
+create table ethereum_mainnet.status (
+  name              varchar primary key,
+  head_block_hash   bytea,
+  head_block_number numeric,
+  check ((head_block_hash is null) = (head_block_number is null))
+);
 
 create table ethereum_mainnet.accounts (
   id      bytea primary key not null,
