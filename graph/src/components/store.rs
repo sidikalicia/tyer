@@ -1069,4 +1069,15 @@ pub trait ChainStore: Send + Sync + 'static {
 
 pub trait NetworkStore: Send + Sync + 'static {
     fn ensure_network_schema(&self, network_name: String) -> Result<(), Error>;
+
+    fn head_block_ptr(
+        &self,
+        network_name: String,
+    ) -> Box<Future<Item = Option<EthereumBlockPointer>, Error = Error> + Send>;
+
+    fn write_block(
+        &self,
+        network_name: String,
+        block: EthereumBlock,
+    ) -> Box<Future<Item = (), Error = Error> + Send>;
 }
