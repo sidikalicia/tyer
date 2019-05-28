@@ -15,7 +15,7 @@ use std::ops::Deref;
 use std::str::FromStr;
 use std::time::{Duration, Instant};
 
-use crate::module::WasmiModule;
+use crate::module::{ApiMode, WasmiModule};
 
 pub(crate) const TIMEOUT_ENV_VAR: &str = "GRAPH_MAPPING_HANDLER_TIMEOUT";
 
@@ -42,7 +42,8 @@ impl From<graph::prelude::Error> for HostExportError<String> {
 pub(crate) struct HostExports<E, L, S, U> {
     subgraph_id: SubgraphDeploymentId,
     pub api_version: Version,
-    data_source: DataSource,
+    api_mode: ApiMode,
+    abis: Vec<MappingABI>,
     ethereum_adapter: Arc<E>,
     link_resolver: Arc<L>,
     store: Arc<S>,
@@ -59,7 +60,8 @@ where
     pub(crate) fn new(
         subgraph_id: SubgraphDeploymentId,
         api_version: Version,
-        data_source: DataSource,
+        api_mode: ApiMode,
+        abis: Vec<MappingABI>,
         ethereum_adapter: Arc<E>,
         link_resolver: Arc<L>,
         store: Arc<S>,
@@ -68,7 +70,8 @@ where
         HostExports {
             subgraph_id,
             api_version,
-            data_source,
+            api_mode,
+            abis,
             ethereum_adapter,
             link_resolver,
             store,
@@ -111,6 +114,12 @@ where
         entity_id: String,
         mut data: HashMap<String, Value>,
     ) -> Result<(), HostExportError<impl ExportError>> {
+        if self.api_mode.is_resolver() {
+            return Err(HostExportError(format!(
+                "cannot modify the store in a resolver"
+            )));
+        }
+
         // Automatically add an "id" value
         match data.insert("id".to_string(), Value::String(entity_id.clone())) {
             Some(ref v) if v != &Value::String(entity_id.clone()) => {
@@ -140,7 +149,12 @@ where
         ctx: &mut MappingContext,
         entity_type: String,
         entity_id: String,
-    ) {
+    ) -> Result<(), HostExportError<impl ExportError>> {
+        if self.api_mode.is_resolver() {
+            return Err(HostExportError(format!(
+                "cannot modify the store in a resolver"
+            )));
+        }
         ctx.state.entity_operations.push(EntityOperation::Remove {
             key: EntityKey {
                 subgraph_id: self.subgraph_id.clone(),
@@ -148,6 +162,7 @@ where
                 entity_id,
             },
         });
+        Ok(())
     }
 
     pub(crate) fn store_get(
@@ -218,8 +233,6 @@ where
 
         // Obtain the path to the contract ABI
         let contract = self
-            .data_source
-            .mapping
             .abis
             .iter()
             .find(|abi| abi.name == unresolved_call.contract_name)
@@ -354,10 +367,15 @@ where
         &self,
         link: String,
     ) -> Result<Vec<u8>, HostExportError<impl ExportError>> {
+        if self.api_mode.is_resolver() {
+            return Err(HostExportError(format!(
+                "cannot call ipfs.cat in a resolver"
+            )));
+        }
         self.block_on(
             self.link_resolver
                 .cat(&Link { link })
-                .map_err(HostExportError),
+                .map_err(|e| HostExportError(e.to_string())),
         )
     }
 
@@ -584,6 +602,18 @@ where
         name: String,
         params: Vec<String>,
     ) -> Result<(), HostExportError<impl ExportError>> {
+        let (data_source_name, data_source_templates) = match &self.api_mode {
+            ApiMode::Resolver => {
+                return Err(HostExportError(format!(
+                    "cannot create data source in a resolver"
+                )))
+            }
+            ApiMode::Mapping {
+                data_source_name,
+                data_source_templates,
+            } => (data_source_name, data_source_templates),
+        };
+
         info!(
             ctx.logger,
             "Create data source";
@@ -592,16 +622,7 @@ where
         );
 
         // Resolve the name into the right template
-        self.data_source
-            .templates
-            .as_ref()
-            .ok_or_else(|| {
-                HostExportError(format!(
-                    "Failed to create data source from name `{}`. \
-                     Parent data source `{}` contains no templates",
-                    name, self.data_source.name
-                ))
-            })?
+        data_source_templates
             .iter()
             .find(|template| template.name == name)
             .ok_or_else(|| {
@@ -610,11 +631,8 @@ where
                      No template with this name in parent data source `{}`. \
                      Available names: {}.",
                     name,
-                    self.data_source.name,
-                    self.data_source
-                        .templates
-                        .as_ref()
-                        .unwrap()
+                    data_source_name,
+                    data_source_templates
                         .iter()
                         .map(|template| template.name.clone())
                         .collect::<Vec<_>>()
@@ -624,7 +642,7 @@ where
 
         // Remember that we need to create this data source
         ctx.state.created_data_sources.push(DataSourceTemplateInfo {
-            data_source: self.data_source.name.clone(),
+            data_source: data_source_name.clone(),
             template: name,
             params,
         });
@@ -640,11 +658,12 @@ where
     }
 
     pub(crate) fn log_log(&self, ctx: &MappingContext, level: slog::Level, msg: String) {
-        let rs = record_static!(level, self.data_source.name.as_str());
+        let rs = record_static!(level, self.api_mode.description());
+
         ctx.logger.log(&slog::Record::new(
             &rs,
             &format_args!("{}", msg),
-            b!("data_source" => &self.data_source.name),
+            b!("module" => self.api_mode.description()),
         ));
 
         if level == slog::Level::Critical {

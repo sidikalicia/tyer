@@ -7,7 +7,7 @@ use std::thread;
 use std::time::Instant;
 
 use super::MappingContext;
-use crate::module::{ValidModule, WasmiModule, WasmiModuleConfig};
+use crate::module::{ApiMode, ValidModule, WasmiModule, WasmiModuleConfig};
 use graph::components::ethereum::*;
 use graph::components::store::Store;
 use graph::data::subgraph::{DataSource, Source};
@@ -205,7 +205,13 @@ impl RuntimeHost {
             debug!(module_logger, "Start WASM runtime");
             let wasmi_config = WasmiModuleConfig {
                 subgraph_id: config.subgraph_id,
-                data_source: config.data_source,
+                api_version: Version::parse(&config.data_source.mapping.api_version).unwrap(),
+                parsed_module: config.data_source.mapping.runtime,
+                abis: config.data_source.mapping.abis,
+                api_mode: ApiMode::Mapping {
+                    data_source_name: config.data_source.name,
+                    data_source_templates: config.data_source.templates.unwrap_or_default(),
+                },
                 ethereum_adapter: ethereum_adapter.clone(),
                 link_resolver: link_resolver.clone(),
                 store: store.clone(),
