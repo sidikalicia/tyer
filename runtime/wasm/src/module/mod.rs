@@ -75,20 +75,40 @@ fn format_wasmi_error(e: Error) -> String {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub enum ApiMode {
-    Resolver,
+    Resolver {
+        logger: Logger,
+    },
     Mapping {
+        logger: Logger,
+        ctx: MappingContext,
         data_source_name: String,
         data_source_templates: Vec<DataSourceTemplate>,
     },
 }
 
 impl ApiMode {
-    pub fn is_resolver(&self) -> bool {
+    /// Panics in `Resolver` mode which has no block state.
+    pub fn block_state(self) -> BlockState {
         match self {
-            ApiMode::Resolver => true,
-            _ => false,
+            ApiMode::Resolver { .. } => panic!("called block_state in resolver mode"),
+            ApiMode::Mapping { ctx, .. } => ctx.state,
+        }
+    }
+
+    /// Panics in `Resolver` mode which has no block state.
+    pub fn block_state_mut(&mut self) -> &mut BlockState {
+        match self {
+            ApiMode::Resolver { .. } => panic!("called block_state_mut in resolver mode"),
+            ApiMode::Mapping { ctx, .. } => &mut ctx.state,
+        }
+    }
+
+    pub fn logger(&self) -> &Logger {
+        match self {
+            ApiMode::Resolver { logger } => logger,
+            ApiMode::Mapping { logger, .. } => logger,
         }
     }
 
@@ -96,7 +116,7 @@ impl ApiMode {
     pub fn description(&self) -> &str {
         match self {
             // TODO: improve this
-            ApiMode::Resolver => "custom resolver",
+            ApiMode::Resolver { .. } => "custom resolver",
             ApiMode::Mapping {
                 data_source_name, ..
             } => data_source_name,
@@ -108,7 +128,6 @@ pub struct WasmiModuleConfig<T, L, S> {
     pub subgraph_id: SubgraphDeploymentId,
     pub parsed_module: Arc<parity_wasm::elements::Module>,
     pub api_version: Version,
-    pub api_mode: ApiMode,
     pub abis: Vec<MappingABI>,
     pub ethereum_adapter: Arc<T>,
     pub link_resolver: Arc<L>,
@@ -117,7 +136,6 @@ pub struct WasmiModuleConfig<T, L, S> {
 
 /// A pre-processed and valid WASM module, ready to be started as a WasmiModule.
 pub(crate) struct ValidModule<T, L, S, U> {
-    pub logger: Logger,
     pub module: Module,
     host_exports: HostExports<T, L, S, U>,
     user_module: Option<String>,
@@ -131,13 +149,7 @@ where
     U: Sink<SinkItem = Box<Future<Item = (), Error = ()> + Send>> + Clone + Send + Sync + 'static,
 {
     /// Pre-process and validate the module.
-    pub fn new(
-        logger: &Logger,
-        config: WasmiModuleConfig<T, L, S>,
-        task_sink: U,
-    ) -> Result<Self, FailureError> {
-        let logger = logger.new(o!("component" => "WasmiModule"));
-
+    pub fn new(config: WasmiModuleConfig<T, L, S>, task_sink: U) -> Result<Self, FailureError> {
         // Clone the parsed module so we can create an instance of `Module` from it
         let parsed_module = config.parsed_module.as_ref().clone();
 
@@ -177,7 +189,6 @@ where
         let host_exports = HostExports::new(
             config.subgraph_id,
             config.api_version,
-            config.api_mode,
             config.abis,
             config.ethereum_adapter.clone(),
             config.link_resolver.clone(),
@@ -186,7 +197,6 @@ where
         );
 
         Ok(ValidModule {
-            logger,
             module,
             host_exports,
             user_module,
@@ -196,12 +206,10 @@ where
 
 /// A WASM module based on wasmi that powers a subgraph runtime.
 pub(crate) struct WasmiModule<T, L, S, U> {
-    pub logger: Logger,
-    pub module: ModuleRef,
+    pub(crate) module: ModuleRef,
     memory: MemoryRef,
-
-    pub ctx: MappingContext,
-    pub valid_module: Arc<ValidModule<T, L, S, U>>,
+    pub(crate) api_mode: ApiMode,
+    pub(crate) valid_module: Arc<ValidModule<T, L, S, U>>,
 
     // Time when the current handler began processing.
     start_time: Instant,
@@ -219,12 +227,10 @@ where
     U: Sink<SinkItem = Box<Future<Item = (), Error = ()> + Send>> + Clone + Send + Sync + 'static,
 {
     /// Creates a new wasmi module
-    pub fn from_valid_module_with_ctx(
+    pub fn from_valid_module_with_mode(
         valid_module: Arc<ValidModule<T, L, S, U>>,
-        ctx: MappingContext,
+        api_mode: ApiMode,
     ) -> Result<Self, FailureError> {
-        let logger = valid_module.logger.new(o!("component" => "WasmiModule"));
-
         // Build import resolver
         let mut imports = ImportsBuilder::new();
         imports.push_resolver("env", &EnvModuleResolver);
@@ -246,10 +252,9 @@ where
             .clone();
 
         let mut this = WasmiModule {
-            logger,
             module: not_started_module,
             memory,
-            ctx,
+            api_mode,
             valid_module: valid_module.clone(),
             start_time: Instant::now(),
             running_start: true,
@@ -275,8 +280,10 @@ where
         params: Vec<LogParam>,
     ) -> Result<BlockState, FailureError> {
         self.start_time = Instant::now();
-
-        let block = self.ctx.block.block.clone();
+        let block = match &self.api_mode {
+            ApiMode::Mapping { ctx, .. } => EthereumBlockData::from(&ctx.block.block),
+            ApiMode::Resolver { .. } => panic!("attempted to handle log in resolver mode"),
+        };
 
         // Prepare an EthereumEvent for the WASM runtime
         // Decide on the destination type using the mapping
@@ -285,7 +292,7 @@ where
             RuntimeValue::from(
                 self.asc_new::<AscEthereumEvent<AscEthereumTransaction_0_0_2>, _>(
                     &EthereumEventData {
-                        block: EthereumBlockData::from(&block),
+                        block,
                         transaction: EthereumTransactionData::from(transaction.deref()),
                         address: log.address,
                         log_index: log.log_index.unwrap_or(U256::zero()),
@@ -298,7 +305,7 @@ where
         } else {
             RuntimeValue::from(self.asc_new::<AscEthereumEvent<AscEthereumTransaction>, _>(
                 &EthereumEventData {
-                    block: EthereumBlockData::from(&block),
+                    block,
                     transaction: EthereumTransactionData::from(transaction.deref()),
                     address: log.address,
                     log_index: log.log_index.unwrap_or(U256::zero()),
@@ -316,7 +323,7 @@ where
             .invoke_export(handler_name, &[event], &mut self);
 
         // Return either the output state (collected entity operations etc.) or an error
-        result.map(|_| self.ctx.state).map_err(|e| {
+        result.map(|_| self.api_mode.block_state()).map_err(|e| {
             format_err!(
                 "Failed to handle Ethereum event with handler \"{}\": {}",
                 handler_name,
@@ -335,21 +342,18 @@ where
         let user_data = RuntimeValue::from(self.asc_new(user_data));
 
         // Invoke the callback
-        let result =
-            self.module
-                .clone()
-                .invoke_export(handler_name, &[value, user_data], &mut self);
-
-        // Return either the collected entity operations or an error
-        result
-            .map(|_| self.ctx.state.entity_operations)
+        self.module
+            .clone()
+            .invoke_export(handler_name, &[value, user_data], &mut self)
             .map_err(|e| {
                 format_err!(
                     "Failed to handle callback with handler \"{}\": {}",
                     handler_name,
                     format_wasmi_error(e),
                 )
-            })
+            })?;
+
+        Ok(self.api_mode.block_state().entity_operations)
     }
 
     pub(crate) fn handle_ethereum_call(
@@ -361,11 +365,15 @@ where
         outputs: Vec<LogParam>,
     ) -> Result<BlockState, FailureError> {
         self.start_time = Instant::now();
+        let block = match &self.api_mode {
+            ApiMode::Mapping { ctx, .. } => EthereumBlockData::from(&ctx.block.block),
+            ApiMode::Resolver { .. } => panic!("attempted to handle call in resolver mode"),
+        };
 
         // Prepare an EthereumCall for the WASM runtime
         let arg = EthereumCallData {
             address: call.to,
-            block: EthereumBlockData::from(&self.ctx.block.block),
+            block,
             transaction: EthereumTransactionData::from(transaction.deref()),
             inputs,
             outputs,
@@ -377,7 +385,7 @@ where
             &mut self,
         );
 
-        result.map(|_| self.ctx.state).map_err(|err| {
+        result.map(|_| self.api_mode.block_state()).map_err(|err| {
             format_err!(
                 "Failed to handle Ethereum call with handler \"{}\": {}",
                 handler_name,
@@ -391,17 +399,18 @@ where
         handler_name: &str,
     ) -> Result<BlockState, FailureError> {
         self.start_time = Instant::now();
-
-        // Prepare an EthereumBlock for the WASM runtime
-        let arg = EthereumBlockData::from(&self.ctx.block.block);
+        let block = match &self.api_mode {
+            ApiMode::Mapping { ctx, .. } => EthereumBlockData::from(&ctx.block.block),
+            ApiMode::Resolver { .. } => panic!("attempted to handle block in resolver mode"),
+        };
 
         let result = self.module.clone().invoke_export(
             handler_name,
-            &[RuntimeValue::from(self.asc_new(&arg))],
+            &[RuntimeValue::from(self.asc_new(&block))],
             &mut self,
         );
 
-        result.map(|_| self.ctx.state).map_err(|err| {
+        result.map(|_| self.api_mode.block_state()).map_err(|err| {
             format_err!(
                 "Failed to handle Ethereum block with handler \"{}\": {}",
                 handler_name,
@@ -504,7 +513,7 @@ where
         let data = self.asc_get(data_ptr);
         self.valid_module
             .host_exports
-            .store_set(&mut self.ctx, entity, id, data)?;
+            .store_set(&mut self.api_mode, entity, id, data)?;
         Ok(None)
     }
 
@@ -521,7 +530,7 @@ where
         let id = self.asc_get(id_ptr);
         self.valid_module
             .host_exports
-            .store_remove(&mut self.ctx, entity, id)?;
+            .store_remove(&mut self.api_mode, entity, id)?;
         Ok(None)
     }
 
@@ -532,7 +541,7 @@ where
         id_ptr: AscPtr<AscString>,
     ) -> Result<Option<RuntimeValue>, Trap> {
         let entity_option = self.host_exports().store_get(
-            &self.ctx,
+            &self.api_mode,
             self.asc_get(entity_ptr),
             self.asc_get(id_ptr),
         )?;
@@ -552,7 +561,7 @@ where
         let result = self
             .valid_module
             .host_exports
-            .ethereum_call(&mut self.ctx, call)?;
+            .ethereum_call(&self.api_mode, call)?;
         Ok(Some(RuntimeValue::from(self.asc_new(&*result))))
     }
 
@@ -633,7 +642,7 @@ where
     /// function ipfs.cat(link: String): Bytes
     fn ipfs_cat(&mut self, link_ptr: AscPtr<AscString>) -> Result<Option<RuntimeValue>, Trap> {
         let link = self.asc_get(link_ptr);
-        let ipfs_res = self.host_exports().ipfs_cat(link);
+        let ipfs_res = self.host_exports().ipfs_cat(&self.api_mode, link);
         match ipfs_res {
             Ok(bytes) => {
                 let bytes_obj: AscPtr<Uint8Array> = self.asc_new(&*bytes);
@@ -642,9 +651,9 @@ where
 
             // Return null in case of error.
             Err(e) => {
-                info!(self.logger, "Failed ipfs.cat, returning `null`";
-                                    "link" => self.asc_get::<String, _>(link_ptr),
-                                    "error" => e.to_string());
+                info!(self.api_mode.logger(), "Failed ipfs.cat, returning `null`";
+                                              "link" => self.asc_get::<String, _>(link_ptr),
+                                              "error" => e.to_string());
                 Ok(Some(RuntimeValue::from(0)))
             }
         }
@@ -671,14 +680,17 @@ where
             {
                 Ok(ops) => {
                     debug!(
-                        self.logger,
+                        self.api_mode.logger(),
                         "Successfully processed file with ipfs.map";
                         "link" => &link,
                         "callback" => &*callback,
                         "entity_operations" => ops.len(),
                         "time" => format!("{}ms", start_time.elapsed().as_millis())
                     );
-                    self.ctx.state.entity_operations.extend(ops);
+                    self.api_mode
+                        .block_state_mut()
+                        .entity_operations
+                        .extend(ops);
                     Ok(None)
                 }
                 Err(e) => Err(e.into()),
@@ -917,7 +929,7 @@ where
         let params: Vec<String> = self.asc_get(params_ptr);
         self.valid_module
             .host_exports
-            .data_source_create(&mut self.ctx, name, params)?;
+            .data_source_create(&mut self.api_mode, name, params)?;
         Ok(None)
     }
 
@@ -942,7 +954,7 @@ where
         let msg: String = self.asc_get(msg);
         self.valid_module
             .host_exports
-            .log_log(&self.ctx, level, msg);
+            .log_log(&self.api_mode, level, msg);
         Ok(None)
     }
 }

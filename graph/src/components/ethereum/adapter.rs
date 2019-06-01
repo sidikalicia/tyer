@@ -40,7 +40,9 @@ pub struct EthereumContractState {
 #[derive(Clone, Debug)]
 pub struct EthereumContractCall {
     pub address: Address,
-    pub block_ptr: EthereumBlockPointer,
+
+    /// If `None`, call will be made against the latest block.
+    pub block_ptr: Option<EthereumBlockPointer>,
     pub function: Function,
     pub args: Vec<Token>,
 }

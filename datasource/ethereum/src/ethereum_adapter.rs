@@ -989,7 +989,7 @@ where
                 logger,
                 call.address,
                 Bytes(call_data),
-                Some(call.block_ptr.number.into()),
+                call.block_ptr.map(|block| block.number.into()),
             )
             .map_err(EthereumContractCallError::from)
             .and_then(move |output| {

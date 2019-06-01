@@ -208,17 +208,15 @@ impl RuntimeHost {
                 api_version: Version::parse(&config.data_source.mapping.api_version).unwrap(),
                 parsed_module: config.data_source.mapping.runtime,
                 abis: config.data_source.mapping.abis,
-                api_mode: ApiMode::Mapping {
-                    data_source_name: config.data_source.name,
-                    data_source_templates: config.data_source.templates.unwrap_or_default(),
-                },
                 ethereum_adapter: ethereum_adapter.clone(),
                 link_resolver: link_resolver.clone(),
                 store: store.clone(),
             };
-            let valid_module = ValidModule::new(&module_logger, wasmi_config, task_sender)
-                .expect("Failed to validate module");
+            let valid_module =
+                ValidModule::new(wasmi_config, task_sender).expect("Failed to validate module");
             let valid_module = Arc::new(valid_module);
+            let data_source_name = config.data_source.name.clone();
+            let data_source_templates = config.data_source.templates.unwrap_or_default();
 
             // Pass incoming triggers to the WASM module and return entity changes;
             // Stop when cancelled.
@@ -239,14 +237,14 @@ impl RuntimeHost {
                         result_sender,
                     } = request;
 
-                    let ctx = MappingContext {
+                    let mode = ApiMode::Mapping {
                         logger,
-                        block,
-                        state,
+                        ctx: MappingContext { block, state },
+                        data_source_name: data_source_name.clone(),
+                        data_source_templates: data_source_templates.clone(),
                     };
-
                     let module =
-                        WasmiModule::from_valid_module_with_ctx(valid_module.clone(), ctx)?;
+                        WasmiModule::from_valid_module_with_mode(valid_module.clone(), mode)?;
 
                     let result = match trigger {
                         MappingTrigger::Log {

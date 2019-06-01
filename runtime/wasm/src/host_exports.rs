@@ -42,7 +42,6 @@ impl From<graph::prelude::Error> for HostExportError<String> {
 pub(crate) struct HostExports<E, L, S, U> {
     subgraph_id: SubgraphDeploymentId,
     pub api_version: Version,
-    api_mode: ApiMode,
     abis: Vec<MappingABI>,
     ethereum_adapter: Arc<E>,
     link_resolver: Arc<L>,
@@ -60,7 +59,6 @@ where
     pub(crate) fn new(
         subgraph_id: SubgraphDeploymentId,
         api_version: Version,
-        api_mode: ApiMode,
         abis: Vec<MappingABI>,
         ethereum_adapter: Arc<E>,
         link_resolver: Arc<L>,
@@ -70,7 +68,6 @@ where
         HostExports {
             subgraph_id,
             api_version,
-            api_mode,
             abis,
             ethereum_adapter,
             link_resolver,
@@ -109,16 +106,19 @@ where
 
     pub(crate) fn store_set(
         &self,
-        ctx: &mut MappingContext,
+        api_mode: &mut ApiMode,
         entity_type: String,
         entity_id: String,
         mut data: HashMap<String, Value>,
     ) -> Result<(), HostExportError<impl ExportError>> {
-        if self.api_mode.is_resolver() {
-            return Err(HostExportError(format!(
-                "cannot modify the store in a resolver"
-            )));
-        }
+        let ctx = match api_mode {
+            ApiMode::Mapping { ctx, .. } => ctx,
+            ApiMode::Resolver { .. } => {
+                return Err(HostExportError(format!(
+                    "cannot modify the store in a resolver"
+                )))
+            }
+        };
 
         // Automatically add an "id" value
         match data.insert("id".to_string(), Value::String(entity_id.clone())) {
@@ -146,15 +146,18 @@ where
 
     pub(crate) fn store_remove(
         &self,
-        ctx: &mut MappingContext,
+        api_mode: &mut ApiMode,
         entity_type: String,
         entity_id: String,
     ) -> Result<(), HostExportError<impl ExportError>> {
-        if self.api_mode.is_resolver() {
-            return Err(HostExportError(format!(
-                "cannot modify the store in a resolver"
-            )));
-        }
+        let ctx = match api_mode {
+            ApiMode::Mapping { ctx, .. } => ctx,
+            ApiMode::Resolver { .. } => {
+                return Err(HostExportError(format!(
+                    "cannot modify the store in a resolver"
+                )))
+            }
+        };
         ctx.state.entity_operations.push(EntityOperation::Remove {
             key: EntityKey {
                 subgraph_id: self.subgraph_id.clone(),
@@ -167,7 +170,7 @@ where
 
     pub(crate) fn store_get(
         &self,
-        ctx: &MappingContext,
+        api_mode: &ApiMode,
         entity_type: String,
         entity_id: String,
     ) -> Result<Option<Entity>, HostExportError<impl ExportError>> {
@@ -178,13 +181,16 @@ where
             entity_id: entity_id.clone(),
         };
 
-        // Get all operations for this entity
-        let matching_operations: Vec<_> = ctx
-            .state
-            .entity_operations
-            .iter()
-            .filter(|op| op.matches_entity(&store_key))
-            .collect();
+        // Get all uncommited operations for this entity
+        let matching_operations = match api_mode {
+            ApiMode::Mapping { ctx, .. } => ctx
+                .state
+                .entity_operations
+                .iter()
+                .filter(|op| op.matches_entity(&store_key))
+                .collect(),
+            ApiMode::Resolver { .. } => Vec::new(),
+        };
 
         // Shortcut 1: If the latest operation for this entity was a removal,
         // return 0 (= null) to the runtime
@@ -217,7 +223,7 @@ where
                     .map_err(QueryExecutionError::StoreError)
             })
             .map_err(HostExportError);
-        debug!(ctx.logger, "Store get finished";
+        debug!(api_mode.logger(), "Store get finished";
                "type" => &entity_type, 
                "id" => &entity_id,
                "time" => format!("{}ms", start_time.elapsed().as_millis()));
@@ -226,10 +232,14 @@ where
 
     pub(crate) fn ethereum_call(
         &self,
-        ctx: &MappingContext,
+        api_mode: &ApiMode,
         unresolved_call: UnresolvedContractCall,
     ) -> Result<Vec<Token>, HostExportError<impl ExportError>> {
         let start_time = Instant::now();
+        let ctx = match api_mode {
+            ApiMode::Mapping { ctx, .. } => Some(ctx),
+            ApiMode::Resolver { .. } => None,
+        };
 
         // Obtain the path to the contract ABI
         let contract = self
@@ -257,7 +267,7 @@ where
 
         let call = EthereumContractCall {
             address: unresolved_call.contract_address.clone(),
-            block_ptr: ctx.block.as_ref().deref().into(),
+            block_ptr: ctx.map(|ctx| ctx.block.as_ref().deref().into()),
             function: function.clone(),
             args: unresolved_call.function_args.clone(),
         };
@@ -266,7 +276,7 @@ where
         let function_name = unresolved_call.function_name.clone();
         let contract_name = unresolved_call.contract_name.clone();
         let eth_adapter = self.ethereum_adapter.clone();
-        let logger = ctx.logger.clone();
+        let logger = api_mode.logger().clone();
         let result = self.block_on(future::lazy(move || {
             eth_adapter.contract_call(&logger, call).map_err(move |e| {
                 HostExportError(format!(
@@ -276,7 +286,7 @@ where
             })
         }));
 
-        debug!(ctx.logger, "Contract call finished";
+        debug!(api_mode.logger(), "Contract call finished";
               "address" => &unresolved_call.contract_address.to_string(),
               "contract" => &unresolved_call.contract_name,
               "function" => &unresolved_call.function_name,
@@ -365,12 +375,16 @@ where
 
     pub(crate) fn ipfs_cat(
         &self,
+        api_mode: &ApiMode,
         link: String,
     ) -> Result<Vec<u8>, HostExportError<impl ExportError>> {
-        if self.api_mode.is_resolver() {
-            return Err(HostExportError(format!(
-                "cannot call ipfs.cat in a resolver"
-            )));
+        match api_mode {
+            ApiMode::Mapping { .. } => (),
+            ApiMode::Resolver { .. } => {
+                return Err(HostExportError(format!(
+                    "cannot call ipfs.cat in a resolver"
+                )))
+            }
         }
         self.block_on(
             self.link_resolver
@@ -396,34 +410,60 @@ where
         flags: Vec<String>,
     ) -> Result<Vec<EntityOperation>, HostExportError<impl ExportError>> {
         const JSON_FLAG: &str = "json";
+        let (logger, block, data_source_name) = match &module.api_mode {
+            ApiMode::Mapping {
+                logger,
+                ctx: MappingContext { block, .. },
+                data_source_name,
+                ..
+            } => (logger.clone(), block.clone(), data_source_name.clone()),
+            ApiMode::Resolver { .. } => {
+                return Err(HostExportError(format!(
+                    "cannot call `ipfs.map` in a resolver"
+                )))
+            }
+        };
         if !flags.contains(&JSON_FLAG.to_string()) {
             return Err(HostExportError(format!("Flags must contain 'json'")));
         }
 
         let valid_module = module.valid_module.clone();
-        let ctx = module.ctx.clone();
         let callback = callback.to_owned();
+
         // Create a base error message to avoid borrowing headaches
-        let errmsg = format!(
+        let err_msg = format!(
             "ipfs_map: callback '{}' failed when processing file '{}'",
             &*callback, &link
         );
 
         let start = Instant::now();
         let mut last_log = Instant::now();
-        let logger = ctx.logger.new(o!("ipfs_map" => link.clone()));
+        let logger = logger.new(o!("ipfs_map" => link.clone()));
         let operations = self.block_on(
             self.link_resolver
                 .json_stream(&Link { link })
                 .and_then(move |stream| {
                     stream
                         .and_then(move |sv| {
-                            let module = WasmiModule::from_valid_module_with_ctx(
+                            let mode = ApiMode::Mapping {
+                                logger: logger.clone(),
+                                ctx: MappingContext {
+                                    block: block.clone(),
+                                    state: BlockState::default(),
+                                },
+                                data_source_name: data_source_name.clone(),
+
+                                // Currently, ipfs_map cannot create data sources.
+                                data_source_templates: Vec::new(),
+                            };
+                            let module = WasmiModule::from_valid_module_with_mode(
                                 valid_module.clone(),
-                                ctx.clone(),
+                                mode,
                             )?;
+
                             let result =
                                 module.handle_json_callback(&*callback, &sv.value, &user_data);
+
                             // Log progress every 15s
                             if last_log.elapsed() > Duration::from_secs(15) {
                                 debug!(
@@ -434,11 +474,11 @@ where
                                 );
                                 last_log = Instant::now();
                             }
-                            result
+                            result //Ok(api_mode.block_state_ref().entity_operations.clone())
                         })
                         .collect()
                 })
-                .map_err(move |e| HostExportError(format!("{}: {}", errmsg, e.to_string()))),
+                .map_err(move |e| HostExportError(format!("{}: {}", err_msg, e.to_string()))),
         )?;
         // Collect all results into one Vec
         Ok(operations.into_iter().flatten().collect())
@@ -598,28 +638,30 @@ where
 
     pub(crate) fn data_source_create(
         &self,
-        ctx: &mut MappingContext,
+        api_mode: &mut ApiMode,
         name: String,
         params: Vec<String>,
     ) -> Result<(), HostExportError<impl ExportError>> {
-        let (data_source_name, data_source_templates) = match &self.api_mode {
-            ApiMode::Resolver => {
-                return Err(HostExportError(format!(
-                    "cannot create data source in a resolver"
-                )))
-            }
-            ApiMode::Mapping {
-                data_source_name,
-                data_source_templates,
-            } => (data_source_name, data_source_templates),
-        };
-
         info!(
-            ctx.logger,
+            api_mode.logger(),
             "Create data source";
             "name" => &name,
             "params" => format!("{}", params.join(","))
         );
+
+        let (ctx, data_source_name, data_source_templates) = match api_mode {
+            ApiMode::Mapping {
+                ctx,
+                data_source_name,
+                data_source_templates,
+                ..
+            } => (ctx, data_source_name, data_source_templates),
+            ApiMode::Resolver { .. } => {
+                return Err(HostExportError(format!(
+                    "cannot create data source in a resolver"
+                )))
+            }
+        };
 
         // Resolve the name into the right template
         data_source_templates
@@ -657,13 +699,13 @@ where
         self.store.find_ens_name(hash).map_err(HostExportError)
     }
 
-    pub(crate) fn log_log(&self, ctx: &MappingContext, level: slog::Level, msg: String) {
-        let rs = record_static!(level, self.api_mode.description());
+    pub(crate) fn log_log(&self, api_mode: &ApiMode, level: slog::Level, msg: String) {
+        let rs = record_static!(level, api_mode.description());
 
-        ctx.logger.log(&slog::Record::new(
+        api_mode.logger().log(&slog::Record::new(
             &rs,
             &format_args!("{}", msg),
-            b!("module" => self.api_mode.description()),
+            b!("module" => api_mode.description()),
         ));
 
         if level == slog::Level::Critical {

@@ -138,34 +138,26 @@ impl EthereumAdapter for MockEthereumAdapter {
     }
 }
 
-fn test_valid_module(
+fn test_module(
     data_source: DataSource,
-) -> Arc<
-    ValidModule<
-        MockEthereumAdapter,
-        ipfs_api::IpfsClient,
-        FakeStore,
-        Sender<Box<Future<Item = (), Error = ()> + Send>>,
-    >,
+) -> WasmiModule<
+    MockEthereumAdapter,
+    ipfs_api::IpfsClient,
+    FakeStore,
+    Sender<Box<Future<Item = (), Error = ()> + Send>>,
 > {
-    let logger = Logger::root(slog::Discard, o!());
     let mock_ethereum_adapter = Arc::new(MockEthereumAdapter::default());
     let (task_sender, task_receiver) = channel(100);
     let mut runtime = tokio::runtime::Runtime::new().unwrap();
     runtime.spawn(task_receiver.for_each(tokio::spawn));
     ::std::mem::forget(runtime);
-    Arc::new(
+    let valid_module = Arc::new(
         ValidModule::new(
-            &logger,
             WasmiModuleConfig {
                 subgraph_id: SubgraphDeploymentId::new("wasmModuleTest").unwrap(),
                 api_version: Version::parse(&data_source.mapping.api_version).unwrap(),
                 parsed_module: data_source.mapping.runtime,
                 abis: data_source.mapping.abis,
-                api_mode: ApiMode::Mapping {
-                    data_source_name: data_source.name,
-                    data_source_templates: data_source.templates.unwrap_or_default(),
-                },
                 ethereum_adapter: mock_ethereum_adapter,
                 link_resolver: Arc::new(ipfs_api::IpfsClient::default()),
                 store: Arc::new(FakeStore),
@@ -173,7 +165,17 @@ fn test_valid_module(
             task_sender,
         )
         .unwrap(),
-    )
+    );
+    let mode = ApiMode::Mapping {
+        logger: Logger::root(slog::Discard, o!()),
+        ctx: MappingContext {
+            block: Default::default(),
+            state: BlockState::default(),
+        },
+        data_source_name: data_source.name,
+        data_source_templates: data_source.templates.unwrap_or_default(),
+    };
+    WasmiModule::from_valid_module_with_mode(valid_module, mode).unwrap()
 }
 
 fn mock_data_source(path: &str) -> DataSource {
@@ -226,14 +228,6 @@ fn mock_data_source(path: &str) -> DataSource {
     }
 }
 
-fn mock_context() -> MappingContext {
-    MappingContext {
-        logger: Logger::root(slog::Discard, o!()),
-        block: Default::default(),
-        state: BlockState::default(),
-    }
-}
-
 impl<T, L, S, U> WasmiModule<T, L, S, U>
 where
     T: EthereumAdapter,
@@ -283,8 +277,7 @@ where
 
 #[test]
 fn json_conversions() {
-    let valid_module = test_valid_module(mock_data_source("wasm_test/string_to_number.wasm"));
-    let mut module = WasmiModule::from_valid_module_with_ctx(valid_module, mock_context()).unwrap();
+    let mut module = test_module(mock_data_source("wasm_test/string_to_number.wasm"));
 
     // test u64 conversion
     let number = 9223372036850770800;
@@ -349,8 +342,7 @@ fn json_conversions() {
 
 #[test]
 fn ipfs_cat() {
-    let valid_module = test_valid_module(mock_data_source("wasm_test/ipfs_cat.wasm"));
-    let mut module = WasmiModule::from_valid_module_with_ctx(valid_module, mock_context()).unwrap();
+    let mut module = test_module(mock_data_source("wasm_test/ipfs_cat.wasm"));
     let ipfs = Arc::new(ipfs_api::IpfsClient::default());
 
     let mut runtime = tokio::runtime::Runtime::new().unwrap();
@@ -395,13 +387,11 @@ fn make_thing(id: &str, value: &str) -> (String, EntityOperation) {
 fn ipfs_map() {
     const BAD_IPFS_HASH: &str = "bad-ipfs-hash";
 
-    let valid_module = test_valid_module(mock_data_source("wasm_test/ipfs_map.wasm"));
     let ipfs = Arc::new(ipfs_api::IpfsClient::default());
     let mut runtime = tokio::runtime::Runtime::new().unwrap();
 
     let mut run_ipfs_map = move |json_string| -> Result<Vec<EntityOperation>, Error> {
-        let mut module =
-            WasmiModule::from_valid_module_with_ctx(valid_module.clone(), mock_context()).unwrap();
+        let mut module = test_module(mock_data_source("wasm_test/ipfs_map.wasm"));
         let hash = if json_string == BAD_IPFS_HASH {
             "Qm".to_string()
         } else {
@@ -417,7 +407,7 @@ fn ipfs_map() {
             &mut module,
         )?;
         assert_eq!(None, converted);
-        Ok(module.ctx.state.entity_operations)
+        Ok(module.api_mode.block_state().entity_operations)
     };
 
     // Try it with two valid objects
@@ -459,8 +449,7 @@ fn ipfs_map() {
 
 #[test]
 fn ipfs_fail() {
-    let valid_module = test_valid_module(mock_data_source("wasm_test/ipfs_cat.wasm"));
-    let mut module = WasmiModule::from_valid_module_with_ctx(valid_module, mock_context()).unwrap();
+    let mut module = test_module(mock_data_source("wasm_test/ipfs_cat.wasm"));
 
     let hash = module.asc_new("invalid hash");
     assert!(module
@@ -470,8 +459,7 @@ fn ipfs_fail() {
 
 #[test]
 fn crypto_keccak256() {
-    let valid_module = test_valid_module(mock_data_source("wasm_test/crypto.wasm"));
-    let mut module = WasmiModule::from_valid_module_with_ctx(valid_module, mock_context()).unwrap();
+    let mut module = test_module(mock_data_source("wasm_test/crypto.wasm"));
     let input: &[u8] = "eth".as_ref();
     let input: AscPtr<Uint8Array> = module.asc_new(input);
 
@@ -492,8 +480,7 @@ fn crypto_keccak256() {
 
 #[test]
 fn token_numeric_conversion() {
-    let valid_module = test_valid_module(mock_data_source("wasm_test/token_to_numeric.wasm"));
-    let mut module = WasmiModule::from_valid_module_with_ctx(valid_module, mock_context()).unwrap();
+    let mut module = test_module(mock_data_source("wasm_test/token_to_numeric.wasm"));
 
     // Convert numeric to token and back.
     let num = i32::min_value();
@@ -516,8 +503,7 @@ fn token_numeric_conversion() {
 
 #[test]
 fn big_int_to_from_i32() {
-    let valid_module = test_valid_module(mock_data_source("wasm_test/big_int_to_from_i32.wasm"));
-    let mut module = WasmiModule::from_valid_module_with_ctx(valid_module, mock_context()).unwrap();
+    let mut module = test_module(mock_data_source("wasm_test/big_int_to_from_i32.wasm"));
 
     // Convert i32 to BigInt
     let input: i32 = -157;
@@ -552,8 +538,7 @@ fn big_int_to_from_i32() {
 
 #[test]
 fn big_int_to_hex() {
-    let valid_module = test_valid_module(mock_data_source("wasm_test/big_int_to_hex.wasm"));
-    let mut module = WasmiModule::from_valid_module_with_ctx(valid_module, mock_context()).unwrap();
+    let mut module = test_module(mock_data_source("wasm_test/big_int_to_hex.wasm"));
 
     // Convert zero to hex
     let zero = BigInt::from_unsigned_u256(&U256::zero());
@@ -607,8 +592,7 @@ fn big_int_to_hex() {
 
 #[test]
 fn big_int_arithmetic() {
-    let valid_module = test_valid_module(mock_data_source("wasm_test/big_int_arithmetic.wasm"));
-    let mut module = WasmiModule::from_valid_module_with_ctx(valid_module, mock_context()).unwrap();
+    let mut module = test_module(mock_data_source("wasm_test/big_int_arithmetic.wasm"));
 
     // 0 + 1 = 1
     let zero = BigInt::from(0);
@@ -733,8 +717,7 @@ fn big_int_arithmetic() {
 
 #[test]
 fn abort() {
-    let valid_module = test_valid_module(mock_data_source("wasm_test/abort.wasm"));
-    let mut module = WasmiModule::from_valid_module_with_ctx(valid_module, mock_context()).unwrap();
+    let mut module = test_module(mock_data_source("wasm_test/abort.wasm"));
     let err = module
         .module
         .clone()
@@ -745,8 +728,7 @@ fn abort() {
 
 #[test]
 fn bytes_to_base58() {
-    let valid_module = test_valid_module(mock_data_source("wasm_test/bytes_to_base58.wasm"));
-    let mut module = WasmiModule::from_valid_module_with_ctx(valid_module, mock_context()).unwrap();
+    let mut module = test_module(mock_data_source("wasm_test/bytes_to_base58.wasm"));
     let bytes = hex::decode("12207D5A99F603F231D53A4F39D1521F98D2E8BB279CF29BEBFD0687DC98458E7F89")
         .unwrap();
     let bytes_ptr = module.asc_new(bytes.as_slice());
@@ -760,17 +742,14 @@ fn data_source_create() {
     let run_data_source_create = move |name: String,
                                        params: Vec<String>|
           -> Result<Vec<DataSourceTemplateInfo>, Error> {
-        let valid_module = test_valid_module(mock_data_source("wasm_test/data_source_create.wasm"));
-        let mut module =
-            WasmiModule::from_valid_module_with_ctx(valid_module, mock_context()).unwrap();
-
+        let mut module = test_module(mock_data_source("wasm_test/data_source_create.wasm"));
         let name = RuntimeValue::from(module.asc_new(&name));
         let params = RuntimeValue::from(module.asc_new(&*params));
         module
             .module
             .clone()
             .invoke_export("dataSourceCreate", &[name, params], &mut module)?;
-        Ok(module.ctx.state.created_data_sources)
+        Ok(module.api_mode.block_state().created_data_sources)
     };
 
     // Test with a valid template
@@ -805,8 +784,7 @@ fn data_source_create() {
 
 #[test]
 fn ens_name_by_hash() {
-    let valid_module = test_valid_module(mock_data_source("wasm_test/ens_name_by_hash.wasm"));
-    let mut module = WasmiModule::from_valid_module_with_ctx(valid_module, mock_context()).unwrap();
+    let mut module = test_module(mock_data_source("wasm_test/ens_name_by_hash.wasm"));
 
     let hash = "0x7f0c1b04d1a4926f9c635a030eeb611d4c26e5e73291b32a1c7a4ac56935b5b3";
     let converted: AscPtr<AscString> = module

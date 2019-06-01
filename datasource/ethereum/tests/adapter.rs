@@ -163,7 +163,7 @@ fn contract_call() {
     let holder_addr = Address::from_str("00d04c4b12C4686305bb4F4fC93487CdFBa62580").unwrap();
     let call = EthereumContractCall {
         address: gnt_addr,
-        block_ptr: EthereumBlockPointer::from((H256::zero(), 0 as i64)),
+        block_ptr: Some(EthereumBlockPointer::from((H256::zero(), 0 as i64))),
         function: function,
         args: vec![Token::Address(holder_addr)],
     };

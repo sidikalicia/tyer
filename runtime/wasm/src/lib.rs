@@ -31,21 +31,7 @@ pub(crate) struct UnresolvedContractCall {
 }
 
 #[derive(Debug)]
-pub(crate) struct MappingContext {
-    logger: Logger,
+pub struct MappingContext {
     block: Arc<EthereumBlock>,
     state: BlockState,
-}
-
-/// Cloning an `MappingContext` clones all its fields,
-/// except the `state_operations`, since they are an output
-/// accumulator and are therefore initialized with an empty state.
-impl Clone for MappingContext {
-    fn clone(&self) -> Self {
-        MappingContext {
-            logger: self.logger.clone(),
-            block: self.block.clone(),
-            state: BlockState::default(),
-        }
-    }
 }
