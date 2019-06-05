@@ -1076,9 +1076,7 @@ impl StoreTrait for Store {
             );
         }
     }
-}
 
-impl SubgraphDeploymentStore for Store {
     fn subgraph_schema(&self, subgraph_id: &SubgraphDeploymentId) -> Result<Arc<Schema>, Error> {
         if let Some(schema) = self.schema_cache.lock().unwrap().get(&subgraph_id) {
             trace!(self.logger, "schema cache hit"; "id" => subgraph_id.to_string());

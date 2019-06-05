@@ -430,11 +430,16 @@ impl From<HashMap<Attribute, Value>> for Entity {
     }
 }
 
+impl<'a> FromIterator<(String, Value)> for Entity {
+    fn from_iter<T: IntoIterator<Item = (String, Value)>>(iter: T) -> Entity {
+        Entity::from(HashMap::from_iter(iter))
+    }
+}
+
+// TODO: Check where this is sued
 impl<'a> From<Vec<(&'a str, Value)>> for Entity {
     fn from(entries: Vec<(&'a str, Value)>) -> Entity {
-        Entity::from(HashMap::from_iter(
-            entries.into_iter().map(|(k, v)| (String::from(k), v)),
-        ))
+        Entity::from_iter(entries.into_iter().map(|(k, v)| (String::from(k), v)))
     }
 }
 

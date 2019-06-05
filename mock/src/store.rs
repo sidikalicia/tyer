@@ -352,9 +352,7 @@ impl Store for MockStore {
         _: &EthereumBlockPointer,
     ) {
     }
-}
 
-impl SubgraphDeploymentStore for MockStore {
     fn subgraph_schema(&self, subgraph_id: &SubgraphDeploymentId) -> Result<Arc<Schema>, Error> {
         if *subgraph_id == *SUBGRAPHS_ID {
             // The subgraph of subgraphs schema is built-in.

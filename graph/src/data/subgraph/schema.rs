@@ -382,6 +382,54 @@ impl<'a> From<&'a super::SubgraphManifest> for SubgraphManifestEntity {
 }
 
 #[derive(Debug)]
+pub struct SchemaEntity {
+    pub document: String,
+    pub custom_resolver: CustomResolverEntity,
+}
+
+impl TypedEntity for SchemaEntity {
+    const TYPENAME: &'static str = "SchemaEntity";
+    type IdType = String;
+}
+
+impl SchemaEntity {
+    fn write_operations(self, id: &str) -> Vec<EntityOperation> {
+        let custom_resolver_id = format!("{}-custom-resolver", id);
+
+        let mut entity = Entity::new();
+        entity.set("id", id);
+        entity.set("document", self.document);
+        entity.set("customResolver", custom_resolver_id);
+
+        vec![self.custom_resolver.write_operation(&custom_resolver_id),
+            set_entity_operation(Self::TYPENAME, id, entity)]
+    }
+}
+
+#[derive(Debug)]
+pub struct CustomResolverEntity {
+    pub file: String,
+    pub api_version: String,
+    pub language: String,
+}
+
+impl TypedEntity for CustomResolverEntity {
+    const TYPENAME: &'static str = "CustomResolverEntity";
+    type IdType = String;
+}
+
+impl CustomResolverEntity {
+    fn write_operation(self, id: &str) -> EntityOperation {
+        let mut entity = Entity::new();
+        entity.set("id", id);
+        entity.set("file", self.file);
+        entity.set("api_version", self.api_version);
+        entity.set("language", self.language);
+        set_entity_operation(SELF::TYPENAME, id, entity)
+    }
+}
+
+#[derive(Debug)]
 pub struct EthereumContractDataSourceEntity {
     pub kind: String,
     pub network: Option<String>,

@@ -4,9 +4,9 @@ use std::time::Instant;
 
 use semver::Version;
 use wasmi::{
-    nan_preserving_float::F64, Error, Externals, FuncInstance, FuncRef, HostError, ImportsBuilder,
-    MemoryRef, Module, ModuleImportResolver, ModuleInstance, ModuleRef, RuntimeArgs, RuntimeValue,
-    Signature, Trap,
+    nan_preserving_float::F64, Error, Externals, FromRuntimeValue, FuncInstance, FuncRef,
+    HostError, ImportsBuilder, MemoryRef, Module, ModuleImportResolver, ModuleInstance, ModuleRef,
+    RuntimeArgs, RuntimeValue, Signature, Trap,
 };
 
 use crate::host_exports::{self, HostExportError, HostExports};
@@ -124,6 +124,7 @@ impl ApiMode {
     }
 }
 
+#[derive(Clone, Debug)]
 pub struct WasmiModuleConfig<T, L, S> {
     pub subgraph_id: SubgraphDeploymentId,
     pub parsed_module: Arc<parity_wasm::elements::Module>,
@@ -135,7 +136,7 @@ pub struct WasmiModuleConfig<T, L, S> {
 }
 
 /// A pre-processed and valid WASM module, ready to be started as a WasmiModule.
-pub(crate) struct ValidModule<T, L, S, U> {
+pub struct ValidModule<T, L, S, U> {
     pub module: Module,
     host_exports: HostExports<T, L, S, U>,
     user_module: Option<String>,
@@ -205,7 +206,7 @@ where
 }
 
 /// A WASM module based on wasmi that powers a subgraph runtime.
-pub(crate) struct WasmiModule<T, L, S, U> {
+pub struct WasmiModule<T, L, S, U> {
     pub(crate) module: ModuleRef,
     memory: MemoryRef,
     pub(crate) api_mode: ApiMode,
@@ -417,6 +418,27 @@ where
                 format_wasmi_error(err)
             )
         })
+    }
+
+    pub fn call_resolver(
+        mut self,
+        func_name: &str,
+        input_entity: &Entity,
+    ) -> Result<Value, FailureError> {
+        self.module
+            .clone()
+            .invoke_export(
+                func_name,
+                &[RuntimeValue::from(self.asc_new(input_entity))],
+                &mut self,
+            )
+            .map_err(|e| e.into())
+            .and_then(|val| {
+                val.and_then(AscPtr::from_runtime_value).ok_or_else(|| {
+                    format_err!("resolver function {} does not return a pointer", func_name)
+                })
+            })
+            .map(|value_ptr| self.asc_get(value_ptr.into()))
     }
 }
 

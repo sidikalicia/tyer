@@ -5,37 +5,46 @@ use std::sync::Arc;
 
 use graph::components::store::*;
 use graph::prelude::*;
+use graph_runtime_wasm::WasmiModuleConfig;
 
 use crate::prelude::*;
 use crate::schema::ast as sast;
 use crate::store::query::{collect_entities_from_query_field, parse_subgraph_id};
 
 /// A resolver that fetches entities from a `Store`.
-pub struct StoreResolver<S> {
+pub struct StoreResolver<E, L, S> {
     logger: Logger,
     store: Arc<S>,
+    ethereum_adapter: Arc<E>,
+    link_resolver: Arc<L>,
 }
 
-impl<S> Clone for StoreResolver<S>
-where
-    S: Store,
-{
+impl<E, L, S> Clone for StoreResolver<E, L, S> {
     fn clone(&self) -> Self {
         StoreResolver {
             logger: self.logger.clone(),
             store: self.store.clone(),
+            ethereum_adapter: self.ethereum_adapter.clone(),
+            link_resolver: self.link_resolver.clone(),
         }
     }
 }
 
-impl<S> StoreResolver<S>
+impl<E, L, S> StoreResolver<E, L, S>
 where
-    S: Store,
+    E: EthereumAdapter + Send + Sync,
+    L: LinkResolver + Send + Sync,
+    S: Store + Send + Sync + 'static,
 {
-    pub fn new(logger: &Logger, store: Arc<S>) -> Self {
+    pub fn new(
+        logger: &Logger,
+        store: Arc<S>,
+        custom_resolver_config: WasmiModuleConfig<E, L, S>,
+    ) -> Self {
         StoreResolver {
             logger: logger.new(o!("component" => "StoreResolver")),
             store,
+            custom_resolver_config,
         }
     }
 
@@ -154,10 +163,70 @@ where
             })
             .unwrap_or(true)
     }
+
+    fn custom_resolve(
+        &self,
+        parent_type: &s::ObjectType,
+        parent: &BTreeMap<String, q::Value>,
+        field: &q::Field,
+        scalar_type: &s::ScalarType,
+    ) -> Result<Value, QueryExecutionError> {
+        use graph_runtime_wasm::{ApiMode, ValidModule, WasmiModule};
+
+        let (task_sender, task_receiver) = futures::sync::mpsc::channel(100);
+        tokio::spawn(task_receiver.for_each(tokio::spawn));
+
+        // Run the module in its own thread because it uses `Future::wait`.
+        std::thread::spawn(move || {
+            ValidModule::new(self.custom_resolver_config.clone(), task_sender)
+                .and_then(|valid_module| {
+                    WasmiModule::from_valid_module_with_mode(
+                        Arc::new(valid_module),
+                        ApiMode::Resolver {
+                            logger: self.logger.clone(),
+                        },
+                    )
+                })
+                .and_then(|module| {
+                    let entity = Entity::from_iter(
+                        parent
+                            .iter()
+                            .map(|(field_name, query_value)| {
+                                Value::from_query_value(
+                                    query_value,
+                                    &s::Type::NamedType(scalar_type.name.clone()),
+                                )
+                                .map(|value| (field_name, value))
+                            })
+                            .collect::<Result<_, _>>()?
+                            .into_iter(),
+                    );
+                    module.call_resolver("resolver", &entity)
+                })
+                .map_err(|e| {
+                    QueryExecutionError::CustomResolverExecutionError(
+                        parent_type.name.clone(),
+                        field.name.clone(),
+                        e.into(),
+                    )
+                })
+        })
+        .join()
+        .map_err(|e| {
+            QueryExecutionError::CustomResolverExecutionError(
+                parent_type.name.clone(),
+                field.name.clone(),
+                err_msg("panicked"),
+            )
+        })
+        .and_then(|result| result)
+    }
 }
 
-impl<S> Resolver for StoreResolver<S>
+impl<E, L, S> Resolver for StoreResolver<E, L, S>
 where
+    E: EthereumAdapter + Send + Sync,
+    L: LinkResolver + Send + Sync,
     S: Store,
 {
     fn resolve_objects(
@@ -313,5 +382,48 @@ where
             deployment_id,
             *SUBSCRIPTION_THROTTLE_INTERVAL,
         ))
+    }
+
+    fn resolve_enum_value(
+        &self,
+        field: &q::Field,
+        _enum_type: &s::EnumType,
+        value: Option<&q::Value>,
+    ) -> Result<q::Value, QueryExecutionError> {
+        Ok(value.cloned().unwrap_or(q::Value::Null))
+    }
+
+    fn resolve_scalar_value(
+        &self,
+        parent_object_type: &s::ObjectType,
+        parent: &BTreeMap<String, q::Value>,
+        field: &q::Field,
+        scalar_type: &s::ScalarType,
+        value: Option<&q::Value>,
+    ) -> Result<q::Value, QueryExecutionError> {
+        match field.directives.iter().any(|d| d.name == "resolvedBy") {
+            false => Ok(value.cloned().unwrap_or(q::Value::Null)),
+            true => self
+                .custom_resolve(parent_object_type, parent, field, scalar_type)
+                .map(|v| v.into()),
+        }
+    }
+
+    fn resolve_enum_values(
+        &self,
+        _field: &q::Field,
+        _enum_type: &s::EnumType,
+        value: Option<&q::Value>,
+    ) -> Result<q::Value, Vec<QueryExecutionError>> {
+        Ok(value.cloned().unwrap_or(q::Value::Null))
+    }
+
+    fn resolve_scalar_values(
+        &self,
+        _field: &q::Field,
+        _scalar_type: &s::ScalarType,
+        value: Option<&q::Value>,
+    ) -> Result<q::Value, Vec<QueryExecutionError>> {
+        Ok(value.cloned().unwrap_or(q::Value::Null))
     }
 }

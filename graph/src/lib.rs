@@ -85,7 +85,7 @@ pub mod prelude {
         AttributeIndexDefinition, ChainStore, EntityChange, EntityChangeOperation, EntityFilter,
         EntityKey, EntityOperation, EntityOrder, EntityQuery, EntityRange, EventSource,
         HistoryEvent, Store, StoreError, StoreEvent, StoreEventStream, StoreEventStreamBox,
-        SubgraphDeploymentStore, TransactionAbortError, SUBSCRIPTION_THROTTLE_INTERVAL,
+        TransactionAbortError, SUBSCRIPTION_THROTTLE_INTERVAL,
     };
     pub use crate::components::subgraph::{
         BlockState, DataSourceLoader, DataSourceTemplateInfo, RuntimeHost, RuntimeHostBuilder,

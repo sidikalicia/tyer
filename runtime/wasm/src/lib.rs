@@ -21,6 +21,7 @@ use graph::prelude::*;
 use graph::web3::types::Address;
 
 pub use self::host::{RuntimeHost, RuntimeHostBuilder, RuntimeHostConfig};
+pub use self::module::{ApiMode, ValidModule, WasmiModule, WasmiModuleConfig};
 
 #[derive(Clone, Debug)]
 pub(crate) struct UnresolvedContractCall {

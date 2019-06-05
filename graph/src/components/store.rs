@@ -1035,9 +1035,7 @@ pub trait Store: Send + Sync + 'static {
         subgraph_id: &SubgraphDeploymentId,
         block_ptr: &EthereumBlockPointer,
     );
-}
 
-pub trait SubgraphDeploymentStore: Send + Sync + 'static {
     fn subgraph_schema(&self, subgraph_id: &SubgraphDeploymentId) -> Result<Arc<Schema>, Error>;
 }
 

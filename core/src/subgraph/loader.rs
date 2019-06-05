@@ -15,7 +15,7 @@ pub struct DataSourceLoader<L, Q, S> {
 impl<L, Q, S> DataSourceLoader<L, Q, S>
 where
     L: LinkResolver,
-    S: Store + SubgraphDeploymentStore,
+    S: Store,
     Q: GraphQlRunner,
 {
     pub fn new(store: Arc<S>, link_resolver: Arc<L>, graphql_runner: Arc<Q>) -> Self {
@@ -207,7 +207,7 @@ impl<L, Q, S> DataSourceLoaderTrait for DataSourceLoader<L, Q, S>
 where
     L: LinkResolver,
     Q: GraphQlRunner,
-    S: Store + SubgraphDeploymentStore,
+    S: Store,
 {
     fn load_dynamic_data_sources(
         self: Arc<Self>,
