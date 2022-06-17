@@ -15,7 +15,7 @@ hex-literal = "0.2"
 state_machine_future = "0.2"
 
 [dev-dependencies]
-diesel = { version = "1.4.2", features = ["postgres", "serde_json", "numeric", "r2d2"] }
+diesel = { version = "1.4.6", features = ["postgres", "serde_json", "numeric", "r2d2"] }
 mockall = "0.7.1"
 graph-core = { path = "../../core" }
 graph-store-postgres = { path = "../../store/postgres" }
